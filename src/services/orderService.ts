@@ -393,6 +393,65 @@ export async function updateOrder(orderId: string | number, updatedOrder: Order)
   return savedOrder;
 }
 
+const getPaidWorkflowStatus = (status: Order['workflowStatus'] | string | null | undefined): Order['workflowStatus'] => {
+  if (status === 'Preparing' || status === 'Ready' || status === 'Out For Delivery' || status === 'Completed' || status === 'Cancelled') {
+    return status;
+  }
+  return 'Paid';
+};
+
+export async function markOrderPaid(orderId: string | number) {
+  const rawOrderId = String(orderId);
+  const numericOrderId = Number(rawOrderId);
+  const isNumericOrderId = Number.isFinite(numericOrderId);
+
+  const { data: existingOrder, error: findError } = isNumericOrderId
+    ? await supabase.from(ORDERS_TABLE).select('*').eq('id', numericOrderId).maybeSingle()
+    : await supabase.from(ORDERS_TABLE).select('*').eq('order_no', rawOrderId).maybeSingle();
+
+  if (findError) {
+    console.error('Failed to find order for payment update:', findError);
+    throw findError;
+  }
+
+  if (!existingOrder) {
+    throw new Error('Order not found for payment update.');
+  }
+
+  const currentOrder = orderFromRow(existingOrder as OrderRow);
+  const updatedAt = new Date().toISOString();
+  const workflowStatus = getPaidWorkflowStatus(currentOrder.workflowStatus);
+
+  const { data, error } = await supabase
+    .from(ORDERS_TABLE)
+    .update({
+      payment_status: 'Paid',
+      order_status: workflowStatus,
+      updated_at: updatedAt
+    })
+    .eq('id', existingOrder.id)
+    .select()
+    .single();
+
+  if (error) {
+    console.error('Failed to mark order paid:', error);
+    throw error;
+  }
+
+  const savedOrder = {
+    ...currentOrder,
+    ...orderFromRow(data as OrderRow),
+    paymentStatus: 'Paid' as const,
+    workflowStatus
+  };
+
+  await safeSideEffect('Invoice payment sync', async () => syncInvoiceFromOrder(savedOrder));
+  await safeSideEffect('Customer sync', async () => createOrUpdateCustomerForOrder(savedOrder));
+  await safeSideEffect('Automation log', async () => createAutomationLog('Payment Received', `${savedOrder.orderNo || savedOrder.id} marked as paid`));
+
+  return savedOrder;
+}
+
 export async function loadOrdersFromSupabase() {
   const { data, error } = await supabase
     .from(ORDERS_TABLE)

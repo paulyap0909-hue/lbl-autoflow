@@ -5,7 +5,7 @@ import InvoiceTemplate from './InvoiceTemplate';
 type InvoiceModalProps = {
   order: Order;
   onClose: () => void;
-  onMarkPaid: () => void;
+  onMarkPaid: () => void | Promise<void>;
 };
 
 export default function InvoiceModal({ order, onClose, onMarkPaid }: InvoiceModalProps) {

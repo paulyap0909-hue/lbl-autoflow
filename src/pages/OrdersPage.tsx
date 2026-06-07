@@ -15,6 +15,7 @@ type OrdersPageProps = {
   orderError?: string;
   onAddOrder: (order: Order) => void | Promise<void>;
   onUpdateOrder: (order: Order) => void | Promise<void>;
+  onMarkOrderPaid: (orderId: string | number) => void | Promise<void>;
   onDeleteOrder: (order: Order) => void | Promise<void>;
 };
 
@@ -32,6 +33,11 @@ type QuickFilter = 'All' | 'Today' | 'Upcoming' | 'Completed';
 type OrderWithTimestamps = Order & {
   createdAt?: string;
   created_at?: string;
+};
+
+type OrderWithRawItems = Order & {
+  flavour_quantities?: Order['flavourQuantities'] | string | null;
+  items?: { name?: string; product?: string; quantity?: number | string; qty?: number | string }[] | string | null;
 };
 
 const getTodayDateString = () => {
@@ -78,7 +84,7 @@ const priorityBadgeClass = (label: string) => {
   return 'border-sky-500/20 bg-sky-500/10 text-sky-200';
 };
 
-export default function OrdersPage({ orders, products, orderSource, orderError = '', onAddOrder, onUpdateOrder, onDeleteOrder }: OrdersPageProps) {
+export default function OrdersPage({ orders, products, orderSource, orderError = '', onAddOrder, onUpdateOrder, onMarkOrderPaid, onDeleteOrder }: OrdersPageProps) {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
   const [invoiceOrderId, setInvoiceOrderId] = useState<string | null>(null);
@@ -196,14 +202,18 @@ export default function OrdersPage({ orders, products, orderSource, orderError =
   };
 }, [orders]);
 
-  const handleMarkPaid = (orderId: string) => {
+  const handleMarkPaid = async (orderId: string) => {
     const order = orders.find((item) => item.id === orderId);
     if (!order) return;
-    onUpdateOrder({
-      ...order,
-      paymentStatus: 'Paid',
-      workflowStatus: order.workflowStatus === 'Pending Payment' || order.workflowStatus === 'New Order' ? 'Paid' : order.workflowStatus
-    });
+    try {
+      await onMarkOrderPaid(order.supabaseId || order.id);
+      await reloadInvoices();
+      setToast({ message: `${order.orderNo || order.id} marked as paid.`, type: 'success' });
+    } catch (error) {
+      console.error('Mark paid error:', error);
+      const message = error instanceof Error ? error.message : 'Failed to mark order paid.';
+      setToast({ message, type: 'error' });
+    }
   };
 
   const handleSendKitchen = (orderId: string) => {
@@ -227,20 +237,21 @@ export default function OrdersPage({ orders, products, orderSource, orderError =
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
   };
 
-  const advanceWorkflow = (orderId: string) => {
+  const advanceWorkflow = async (orderId: string) => {
     const order = orders.find((item) => item.id === orderId);
     if (!order) return;
       const nextStatus = workflowNextStatus(order.workflowStatus);
       if (nextStatus === order.workflowStatus) return;
+      if (nextStatus === 'Paid') {
+        await handleMarkPaid(orderId);
+        return;
+      }
       const updatedOrder: Order = {
         ...order,
         workflowStatus: nextStatus,
         statusHistory: [...order.statusHistory, { status: nextStatus, timestamp: getTimestamp() }]
       };
 
-      if (nextStatus === 'Paid') {
-        updatedOrder.paymentStatus = 'Paid';
-      }
       if (nextStatus === 'Preparing') {
         updatedOrder.kitchenStatus = 'Preparing';
       }
@@ -325,14 +336,97 @@ export default function OrdersPage({ orders, products, orderSource, orderError =
     return digits;
   };
 
-  const handleSendInvoiceWhatsApp = (order: Order, invoice: InvoiceRecord | null) => {
+  const parseOrderItems = (value: OrderWithRawItems['flavour_quantities'] | OrderWithRawItems['items']) => {
+    if (!value) return [];
+    if (Array.isArray(value)) return value;
+    if (typeof value !== 'string') return [];
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return value
+        .replace(/^\[/, '')
+        .replace(/\]$/, '')
+        .replace(/"/g, '')
+        .split(',')
+        .map((item: string) => item.trim())
+        .filter(Boolean)
+        .map((name: string) => ({ name }));
+    }
+  };
+
+  const formatOrderItemsList = (order: Order) => {
+    const rawOrder = order as OrderWithRawItems;
+    const structuredItems = [
+      ...parseOrderItems(order.flavourQuantities),
+      ...parseOrderItems(rawOrder.flavour_quantities),
+      ...parseOrderItems(rawOrder.items)
+    ];
+
+    const itemLines = structuredItems
+      .map((item) => {
+        const name = String(item.name || item.product || '').trim();
+        if (!name) return '';
+        const quantity = Number(item.quantity ?? item.qty ?? 0);
+        const displayQuantity = Number.isFinite(quantity) && quantity > 0 ? quantity : 1;
+        return `- ${name} x ${displayQuantity}`;
+      })
+      .filter(Boolean);
+
+    if (itemLines.length) return itemLines.join('\n');
+
+    const flavours = Array.isArray(order.flavours) ? order.flavours.filter(Boolean) : [];
+    if (flavours.length) {
+      const quantityPerFlavour = flavours.length > 1 && order.quantity > 0
+        ? Math.floor(order.quantity / flavours.length)
+        : order.quantity;
+      return flavours.map((flavour) => `- ${flavour} x ${quantityPerFlavour || 1}`).join('\n');
+    }
+
+    return `- ${order.product} x ${order.quantity || 1}`;
+  };
+
+  const formatDeliveryAddress = (order: Order) => {
+    const address = String(order.address || '').trim();
+    if (!address) return 'To be confirmed';
+    if (/self\s*collect|pickup|pick\s*up|collection/i.test(address)) return 'Self Collect';
+    return address;
+  };
+
+  const buildOrderWhatsAppMessage = (order: Order) => {
+    const orderNo = order.orderNo || order.id;
+    return `Hi ${order.customerName}, thank you for your order with Layer By Layer Bakery 😊
+
+Here are your order details:
+
+Order No: ${orderNo}
+
+Items:
+${formatOrderItemsList(order)}
+
+Delivery / Collection:
+Date: ${order.deliveryDate || 'To be confirmed'}
+Time: ${order.deliveryTime || 'To be confirmed'}
+Address: ${formatDeliveryAddress(order)}
+
+Total Amount: ${formatRM(order.totalAmount)}
+
+Payment Details:
+Layer By Layer Bakery
+Maybank
+5145 8954 8255
+
+Kindly send us the payment receipt once payment has been made.
+Thank you 😊`;
+  };
+
+  const handleSendInvoiceWhatsApp = (order: Order, _invoice: InvoiceRecord | null) => {
     const phone = normalizeMalaysiaPhone(order.phone);
     if (!phone) {
       setToast({ message: 'Phone number missing', type: 'error' });
       return;
     }
-    const invoiceRef = invoice?.pdf_url || `${window.location.origin}/?invoice=${invoice?.invoice_no || order.orderNo || order.id}`;
-    const message = `Hi ${order.customerName}, thank you for your order with Layer By Layer Bakery.\n\nHere is your invoice:\n${invoiceRef}\n\nThank you for supporting our small business.`;
+    const message = buildOrderWhatsAppMessage(order);
     window.open(`https://wa.me/${phone}?text=${encodeURIComponent(message)}`, '_blank', 'noopener,noreferrer');
   };
 
@@ -635,9 +729,7 @@ export default function OrdersPage({ orders, products, orderSource, orderError =
         <InvoiceModal
           order={orders.find((order) => order.id === invoiceOrderId)!}
           onClose={() => setInvoiceOrderId(null)}
-          onMarkPaid={() => {
-            handleMarkPaid(invoiceOrderId);
-          }}
+          onMarkPaid={() => handleMarkPaid(invoiceOrderId)}
         />
       )}
       {previewInvoiceOrderId && (() => {

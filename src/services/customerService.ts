@@ -61,6 +61,21 @@ const getCustomerTier = (spend: number): Customer['status'] => {
   return 'Bronze';
 };
 
+const normalizePhoneForMatch = (phone: string) => {
+  const digits = phone.replace(/\D/g, '');
+  if (!digits) return '';
+  if (digits.startsWith('60')) return digits;
+  if (digits.startsWith('0')) return `6${digits}`;
+  return digits;
+};
+
+const phoneVariantsForLookup = (phone: string) => {
+  const trimmed = phone.trim();
+  const normalized = normalizePhoneForMatch(trimmed);
+  const local = normalized.startsWith('60') ? `0${normalized.slice(2)}` : '';
+  return Array.from(new Set([trimmed, normalized, local, normalized ? `+${normalized}` : ''].filter(Boolean)));
+};
+
 const getOrderAmount = (order: CustomerOrderRow) => {
   const directTotal = toSafeNumber(order.total_amount ?? order.total);
   if (directTotal > 0) return directTotal;
@@ -122,23 +137,37 @@ const mostFrequent = (values: string[], fallback = '') => {
 };
 
 const loadCustomerOrders = async (phone: string, customerId?: string | number | null) => {
-  const normalizedPhone = phone.trim();
   const id = customerId === undefined || customerId === null || String(customerId).trim() === '' ? '' : String(customerId);
-  let query = supabase
+  const columns = 'id, customer_id, customer_name, phone, address, delivery_date, created_at, product, flavours, flavour_quantities, total_amount, total, final_subtotal, delivery_fee';
+
+  if (id) {
+    const { data, error } = await supabase
+      .from('orders')
+      .select(columns)
+      .eq('customer_id', id);
+
+    if (error) {
+      console.error('Failed to load customer orders:', error);
+      throw error;
+    }
+
+    if ((data ?? []).length > 0) return data as CustomerOrderRow[];
+  }
+
+  const normalizedPhone = normalizePhoneForMatch(phone);
+  if (!normalizedPhone) return [];
+
+  const { data, error } = await supabase
     .from('orders')
-    .select('id, customer_id, customer_name, phone, address, delivery_date, created_at, product, flavours, flavour_quantities, total_amount, total, final_subtotal, delivery_fee');
+    .select(columns)
+    .in('phone', phoneVariantsForLookup(phone));
 
-  query = id
-    ? query.or(`customer_id.eq.${id},phone.eq.${normalizedPhone}`)
-    : query.eq('phone', normalizedPhone);
-
-  const { data, error } = await query;
   if (error) {
     console.error('Failed to load customer orders:', error);
     throw error;
   }
 
-  return (data ?? []) as CustomerOrderRow[];
+  return ((data ?? []) as CustomerOrderRow[]).filter((item) => normalizePhoneForMatch(item.phone || '') === normalizedPhone);
 };
 
 export const customerFromRow = (row: CustomerRow): Customer => ({
@@ -177,23 +206,36 @@ export async function loadCustomersFromSupabase() {
 export async function createOrUpdateCustomerForOrder(order: Order, existingOrders: Order[] = []) {
   const phone = order.phone.trim();
   if (!phone) return null;
+  const normalizedPhone = normalizePhoneForMatch(phone);
+  const orderCustomerId = order.customerId === undefined || order.customerId === null || String(order.customerId).trim() === ''
+    ? ''
+    : String(order.customerId);
 
-  const { data: existing, error: findError } = await supabase
-    .from('customers')
-    .select('*')
-    .eq('phone', phone)
-    .maybeSingle();
+  const { data: customerRows, error: findError } = orderCustomerId
+    ? await supabase
+        .from('customers')
+        .select('*')
+        .eq('id', orderCustomerId)
+    : await supabase
+        .from('customers')
+        .select('*')
+        .in('phone', phoneVariantsForLookup(phone));
 
   if (findError) {
     console.error('Failed to find customer by phone:', findError);
     throw findError;
   }
 
+  const existing = (customerRows ?? []).find((row) =>
+    orderCustomerId
+      ? String((row as CustomerRow).id || '') === orderCustomerId
+      : normalizePhoneForMatch((row as CustomerRow).phone || '') === normalizedPhone
+  );
   const existingCustomer = existing ? customerFromRow(existing as CustomerRow) : null;
-  const customerOrders = await loadCustomerOrders(phone, existingCustomer?.id);
+  const customerOrders = await loadCustomerOrders(phone, existingCustomer?.id ?? orderCustomerId);
   const fallbackOrders = customerOrders.length > 0
     ? customerOrders
-    : [order, ...existingOrders.filter((item) => item.phone.trim() === phone && item.id !== order.id)].map((item) => ({
+    : [order, ...existingOrders.filter((item) => normalizePhoneForMatch(item.phone) === normalizedPhone && item.id !== order.id)].map((item) => ({
         id: item.supabaseId || item.id,
         customer_id: item.customerId ?? null,
         customer_name: item.customerName,
@@ -239,12 +281,12 @@ export async function createOrUpdateCustomerForOrder(order: Order, existingOrder
       customer_status: existingCustomer?.customerStatus || 'Active'
     };
 
-    const { data, error } = await supabase
+    const query = supabase
       .from('customers')
-      .update(payload)
-      .eq('phone', phone)
-      .select()
-      .single();
+      .update(payload);
+    const { data, error } = existingCustomer?.id
+      ? await query.eq('id', existingCustomer.id).select().single()
+      : await query.eq('phone', phone).select().single();
 
     if (error) {
       console.error('Failed to update customer:', error);

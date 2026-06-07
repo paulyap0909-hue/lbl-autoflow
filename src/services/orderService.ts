@@ -95,7 +95,7 @@ const normalizeOrderStatus = (status: OrderRow['order_status']): Order['workflow
 };
 
 const normalizeKitchenStatus = (status: OrderRow['kitchen_status'], orderStatus: Order['workflowStatus']): Order['kitchenStatus'] => {
-  if (status === 'Preparing' || status === 'Ready') return status;
+  if (status === 'Preparing' || status === 'Ready' || status === 'Completed') return status;
   if (orderStatus === 'Preparing') return 'Preparing';
   if (orderStatus === 'Ready') return 'Ready';
   return 'New';
@@ -198,7 +198,7 @@ export const orderFromRow = (row: OrderRow): Order => {
   };
 };
 
-export const orderToRow = (order: Order) => ({
+const getOrderRowBase = (order: Order) => ({
   order_no: order.orderNo || order.id,
   customer_name: order.customerName,
   phone: order.phone,
@@ -225,9 +225,20 @@ export const orderToRow = (order: Order) => ({
   discount_amount: toSafeNumber(order.discountAmount),
   discount_reason: order.discountReason || '',
   original_subtotal: toSafeNumber(order.originalSubtotal ?? (order.quantity * (order.originalUnitPrice ?? order.unitPrice))),
-  final_subtotal: toSafeNumber(order.finalSubtotal ?? (order.totalAmount - order.deliveryFee)),
+  final_subtotal: toSafeNumber(order.finalSubtotal ?? (order.totalAmount - order.deliveryFee))
+});
+
+export const orderToCreateRow = (order: Order) => ({
+  ...getOrderRowBase(order),
   created_at: new Date().toISOString()
 });
+
+export const orderToUpdateRow = (order: Order) => ({
+  ...getOrderRowBase(order),
+  updated_at: new Date().toISOString()
+});
+
+export const orderToRow = orderToCreateRow;
 
 const getOrderLookup = (order: Order) => ({
   column: order.supabaseId ? 'id' : 'order_no',
@@ -308,6 +319,10 @@ export async function syncDeliveryTaskFromOrder(updatedOrder: Order) {
 export async function syncInvoiceFromOrder(updatedOrder: Order) {
   const orderId = Number(updatedOrder.supabaseId || updatedOrder.id);
   if (!Number.isFinite(orderId)) return null;
+  const subtotal = toSafeNumber(updatedOrder.finalSubtotal ?? updatedOrder.originalSubtotal ?? updatedOrder.totalAmount);
+  const deliveryFee = toSafeNumber(updatedOrder.deliveryFee);
+  const discountAmount = toSafeNumber(updatedOrder.discountAmount);
+  const grandTotal = toSafeNumber(updatedOrder.totalAmount) || subtotal + deliveryFee;
 
   const { data: existing, error: findError } = await supabase
     .from('invoices')
@@ -321,8 +336,13 @@ export async function syncInvoiceFromOrder(updatedOrder: Order) {
   const { data, error } = await supabase
     .from('invoices')
     .update({
-      amount: updatedOrder.totalAmount,
-      status: updatedOrder.paymentStatus
+      amount: grandTotal,
+      subtotal,
+      delivery_fee: deliveryFee,
+      discount_amount: discountAmount,
+      grand_total: grandTotal,
+      status: updatedOrder.paymentStatus,
+      updated_at: new Date().toISOString()
     })
     .eq('id', existing.id)
     .select()
@@ -335,7 +355,7 @@ export async function syncInvoiceFromOrder(updatedOrder: Order) {
 export async function updateOrder(orderId: string | number, updatedOrder: Order) {
   const { data, error } = await supabase
     .from('orders')
-    .update(orderToRow(updatedOrder))
+    .update(orderToUpdateRow(updatedOrder))
     .eq('id', orderId)
     .select()
     .single();
@@ -367,6 +387,7 @@ export async function updateOrder(orderId: string | number, updatedOrder: Order)
   await safeSideEffect('Kitchen task sync', async () => syncKitchenTaskFromOrder(savedOrder));
   await safeSideEffect('Delivery task sync', async () => syncDeliveryTaskFromOrder(savedOrder));
   await safeSideEffect('Invoice sync', async () => syncInvoiceFromOrder(savedOrder));
+  await safeSideEffect('Customer sync', async () => createOrUpdateCustomerForOrder(savedOrder));
   await safeSideEffect('Automation log', async () => createAutomationLog('Order Updated', `${savedOrder.orderNo || savedOrder.id} edited and synced`));
 
   return savedOrder;
@@ -423,7 +444,7 @@ export async function createOrderInSupabase(order: Order) {
 
   const { data, error } = await supabase
     .from(ORDERS_TABLE)
-    .insert(orderToRow(order))
+    .insert(orderToCreateRow(order))
     .select()
     .single();
 
@@ -488,12 +509,11 @@ export async function deleteOrderFromSupabase(order: Order) {
 
 export async function createFullOrderWorkflow(order: Order, existingOrders: Order[] = []) {
   console.log('Creating full order workflow', order);
-  let customerAction = 'Customer Updated';
-  await createOrUpdateCustomerForOrder(order, existingOrders);
   const existingCustomer = existingOrders.some((item) => item.phone.trim() === order.phone.trim());
-  customerAction = existingCustomer ? 'Customer Updated' : 'Customer Created';
 
   const savedOrder = await createOrderInSupabase(order);
+  await createOrUpdateCustomerForOrder(savedOrder);
+  const customerAction = existingCustomer ? 'Customer Updated' : 'Customer Created';
   await createInvoiceForOrder(savedOrder);
 
   await safeSideEffect('Automation log', async () => createAutomationLog('New Order Created', 'Order created and related workflow records generated'));

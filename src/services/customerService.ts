@@ -32,6 +32,23 @@ type CustomerRow = {
   customerStatus?: Customer['customerStatus'] | string | null;
 };
 
+type CustomerOrderRow = {
+  id?: string | number | null;
+  customer_id?: string | number | null;
+  customer_name?: string | null;
+  phone?: string | null;
+  address?: string | null;
+  delivery_date?: string | null;
+  created_at?: string | null;
+  product?: string | null;
+  flavours?: string[] | string | null;
+  flavour_quantities?: Array<Record<string, unknown>> | string | null;
+  total_amount?: number | string | null;
+  total?: number | string | null;
+  final_subtotal?: number | string | null;
+  delivery_fee?: number | string | null;
+};
+
 const normalizeStatus = (status: CustomerRow['status']): Customer['status'] => {
   if (status === 'Silver' || status === 'Gold' || status === 'VIP') return status;
   return 'Bronze';
@@ -42,6 +59,86 @@ const getCustomerTier = (spend: number): Customer['status'] => {
   if (spend >= 500) return 'Gold';
   if (spend >= 250) return 'Silver';
   return 'Bronze';
+};
+
+const getOrderAmount = (order: CustomerOrderRow) => {
+  const directTotal = toSafeNumber(order.total_amount ?? order.total);
+  if (directTotal > 0) return directTotal;
+
+  const finalSubtotal = toSafeNumber(order.final_subtotal);
+  const deliveryFee = toSafeNumber(order.delivery_fee);
+  return finalSubtotal > 0 ? finalSubtotal + deliveryFee : 0;
+};
+
+const getOrderDate = (order: CustomerOrderRow) => order.delivery_date || order.created_at?.slice(0, 10) || '';
+
+const parseFlavours = (value: CustomerOrderRow['flavours']) => {
+  if (Array.isArray(value)) return value.map((item) => String(item).trim()).filter(Boolean);
+  if (typeof value !== 'string') return [];
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return Array.isArray(parsed) ? parsed.map((item) => String(item).trim()).filter(Boolean) : [];
+  } catch {
+    return value
+      .replace(/^\[/, '')
+      .replace(/\]$/, '')
+      .replace(/"/g, '')
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+};
+
+const parseFlavourQuantities = (value: CustomerOrderRow['flavour_quantities']) => {
+  const parsed = typeof value === 'string'
+    ? (() => {
+        try {
+          return JSON.parse(value) as unknown;
+        } catch {
+          return [];
+        }
+      })()
+    : value;
+
+  if (!Array.isArray(parsed)) return [];
+
+  return parsed
+    .map((item) => {
+      if (!item || typeof item !== 'object') return '';
+      const record = item as Record<string, unknown>;
+      return String(record.name ?? record.flavour ?? record.flavor ?? record.product ?? '').trim();
+    })
+    .filter(Boolean);
+};
+
+const mostFrequent = (values: string[], fallback = '') => {
+  const counts = values.reduce<Record<string, number>>((acc, value) => {
+    if (!value) return acc;
+    acc[value] = (acc[value] || 0) + 1;
+    return acc;
+  }, {});
+
+  return Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0] || fallback;
+};
+
+const loadCustomerOrders = async (phone: string, customerId?: string | number | null) => {
+  const normalizedPhone = phone.trim();
+  const id = customerId === undefined || customerId === null || String(customerId).trim() === '' ? '' : String(customerId);
+  let query = supabase
+    .from('orders')
+    .select('id, customer_id, customer_name, phone, address, delivery_date, created_at, product, flavours, flavour_quantities, total_amount, total, final_subtotal, delivery_fee');
+
+  query = id
+    ? query.or(`customer_id.eq.${id},phone.eq.${normalizedPhone}`)
+    : query.eq('phone', normalizedPhone);
+
+  const { data, error } = await query;
+  if (error) {
+    console.error('Failed to load customer orders:', error);
+    throw error;
+  }
+
+  return (data ?? []) as CustomerOrderRow[];
 };
 
 export const customerFromRow = (row: CustomerRow): Customer => ({
@@ -81,11 +178,6 @@ export async function createOrUpdateCustomerForOrder(order: Order, existingOrder
   const phone = order.phone.trim();
   if (!phone) return null;
 
-  const customerOrders = [order, ...existingOrders.filter((item) => item.phone.trim() === phone && item.id !== order.id)];
-  const calculatedSpend = customerOrders.reduce((sum, item) => sum + toSafeNumber(item.totalAmount), 0);
-  const calculatedOrders = customerOrders.length;
-  const sortedOrderDates = customerOrders.map((item) => item.deliveryDate).filter(Boolean).sort();
-
   const { data: existing, error: findError } = await supabase
     .from('customers')
     .select('*')
@@ -97,26 +189,54 @@ export async function createOrUpdateCustomerForOrder(order: Order, existingOrder
     throw findError;
   }
 
+  const existingCustomer = existing ? customerFromRow(existing as CustomerRow) : null;
+  const customerOrders = await loadCustomerOrders(phone, existingCustomer?.id);
+  const fallbackOrders = customerOrders.length > 0
+    ? customerOrders
+    : [order, ...existingOrders.filter((item) => item.phone.trim() === phone && item.id !== order.id)].map((item) => ({
+        id: item.supabaseId || item.id,
+        customer_id: item.customerId ?? null,
+        customer_name: item.customerName,
+        phone: item.phone,
+        address: item.address,
+        delivery_date: item.deliveryDate,
+        product: item.product,
+        flavours: item.flavours,
+        flavour_quantities: item.flavourQuantities,
+        total_amount: item.totalAmount,
+        final_subtotal: item.finalSubtotal,
+        delivery_fee: item.deliveryFee
+      }));
+  const sortedOrderDates = fallbackOrders.map(getOrderDate).filter(Boolean).sort();
+  const totalOrders = fallbackOrders.length;
+  const totalSpend = fallbackOrders.reduce((sum, item) => sum + getOrderAmount(item), 0);
+  const favouriteProduct = mostFrequent(fallbackOrders.map((item) => item.product || ''), order.product);
+  const favouriteFlavour = mostFrequent(
+    fallbackOrders.flatMap((item) => {
+      const quantityFlavours = parseFlavourQuantities(item.flavour_quantities);
+      return quantityFlavours.length ? quantityFlavours : parseFlavours(item.flavours);
+    }),
+    order.flavours[0] || ''
+  );
+  const latestOrder = [...fallbackOrders].sort((a, b) => getOrderDate(b).localeCompare(getOrderDate(a)))[0];
+
   if (existing) {
-    const existingCustomer = customerFromRow(existing as CustomerRow);
-    const totalOrders = Math.max(existingCustomer.totalOrders, calculatedOrders);
-    const totalSpend = Math.max(existingCustomer.totalSpend, calculatedSpend);
     const payload = {
-      name: order.customerName.trim() || existingCustomer.name || 'Customer',
+      name: order.customerName.trim() || existingCustomer?.name || 'Customer',
       phone,
-      whatsapp: existingCustomer.whatsapp || phone,
-      email: existingCustomer.email || '',
-      address: existingCustomer.address || order.address || '',
-      notes: existingCustomer.notes || '',
+      whatsapp: existingCustomer?.whatsapp || phone,
+      email: existingCustomer?.email || '',
+      address: existingCustomer?.address || latestOrder?.address || order.address || '',
+      notes: existingCustomer?.notes || '',
       total_orders: totalOrders,
       total_spend: Number(totalSpend.toFixed(2)),
       average_order_value: totalOrders > 0 ? Number((totalSpend / totalOrders).toFixed(2)) : 0,
-      first_order_date: existingCustomer.firstOrderDate || sortedOrderDates[0] || order.deliveryDate,
-      last_order_date: [existingCustomer.lastOrderDate, order.deliveryDate].filter(Boolean).sort().slice(-1)[0] || order.deliveryDate,
-      favourite_product: order.product || existingCustomer.favouriteProduct,
-      favourite_flavour: order.flavours[0] || existingCustomer.favouriteFlavour || '',
+      first_order_date: sortedOrderDates[0] || order.deliveryDate,
+      last_order_date: sortedOrderDates.slice(-1)[0] || order.deliveryDate,
+      favourite_product: favouriteProduct,
+      favourite_flavour: favouriteFlavour,
       status: getCustomerTier(totalSpend),
-      customer_status: existingCustomer.customerStatus || 'Active'
+      customer_status: existingCustomer?.customerStatus || 'Active'
     };
 
     const { data, error } = await supabase
@@ -134,8 +254,6 @@ export async function createOrUpdateCustomerForOrder(order: Order, existingOrder
     return customerFromRow(data as CustomerRow);
   }
 
-  const totalSpend = calculatedSpend;
-  const totalOrders = calculatedOrders;
   const payload = {
     name: order.customerName.trim() || 'Customer',
     phone,
@@ -147,9 +265,9 @@ export async function createOrUpdateCustomerForOrder(order: Order, existingOrder
     total_spend: Number(totalSpend.toFixed(2)),
     average_order_value: totalOrders > 0 ? Number((totalSpend / totalOrders).toFixed(2)) : 0,
     first_order_date: sortedOrderDates[0] || order.deliveryDate,
-    last_order_date: order.deliveryDate,
-    favourite_product: order.product,
-    favourite_flavour: order.flavours[0] || '',
+    last_order_date: sortedOrderDates.slice(-1)[0] || order.deliveryDate,
+    favourite_product: favouriteProduct,
+    favourite_flavour: favouriteFlavour,
     status: getCustomerTier(totalSpend),
     customer_status: 'Active'
   };

@@ -15,6 +15,8 @@ import SalesCRMPage from './pages/SalesCRMPage';
 import CorporateSalesDashboardPage from './pages/CorporateSalesDashboardPage';
 import QuotationPage from './pages/QuotationPage';
 import FollowUpTasksPage from './pages/FollowUpTasksPage';
+import RecipeCalculatorPage from './pages/RecipeCalculatorPage';
+import ProductionCenterPage from './pages/ProductionCenterPage';
 import LoginPage, { type CurrentUser, type UserRole } from './pages/LoginPage';
 import SettingsPage from './pages/SettingsPage';
 import {
@@ -30,9 +32,9 @@ import type { Order, Product, Customer, KitchenTask, DeliveryTask, WhatsAppTempl
 import { loadFromLocalStorage, saveAllToLocalStorage, clearLocalStorage, exportBackupJSON, importBackupJSON } from './utils/localStorage';
 import { createFullOrderWorkflow, deleteOrderFromSupabase, loadOrdersFromSupabase, markOrderPaid as markOrderPaidInSupabase, orderFromRow, updateOrderInSupabase } from './services/orderService';
 import { loadCustomersFromSupabase } from './services/customerService';
-import { loadKitchenTasksFromSupabase, updateKitchenTaskStatus } from './services/kitchenService';
-import { loadDeliveryTasksFromSupabase, updateDeliveryTaskStatus } from './services/deliveryService';
-import { loadInvoicesFromSupabase } from './services/invoiceService';
+import { loadKitchenTasksFromSupabase, syncKitchenStatusForOrder, type KitchenTaskUpdateContext } from './services/kitchenService';
+import { loadDeliveryTasksFromSupabase, updateDeliveryTaskStatus, type DeliveryDriverDetails } from './services/deliveryService';
+import { loadInvoicesFromSupabase, type InvoiceRecord } from './services/invoiceService';
 import { createAutomationLog, loadAutomationLogsFromSupabase } from './services/automationLogService';
 import { loadFollowUpTasksFromSupabase } from './services/followUpTaskService';
 
@@ -46,9 +48,11 @@ const pageTitles: Record<string, string> = {
   delivery: 'Delivery',
   events: 'Events',
   'sales-crm': 'Corporate Leads',
-  'sales-dashboard': 'Reports',
+  'sales-dashboard': 'Sales Pipeline',
   quotations: 'Quotations',
   'follow-up-tasks': 'Follow-up Tasks',
+  'production-center': 'Production Center',
+  'recipe-calculator': 'Recipe Calculator',
   'whatsapp-crm': 'WhatsApp CRM',
   automation: 'Automation Center',
   templates: 'WhatsApp Templates',
@@ -57,7 +61,7 @@ const pageTitles: Record<string, string> = {
 
 const rolePermissions: Record<UserRole, string[]> = {
   admin: Object.keys(pageTitles),
-  sales: ['dashboard', 'orders', 'customers', 'invoices', 'events', 'sales-crm', 'sales-dashboard', 'quotations', 'follow-up-tasks', 'whatsapp-crm', 'delivery', 'kitchen', 'products']
+  sales: ['dashboard', 'orders', 'customers', 'invoices', 'events', 'sales-crm', 'sales-dashboard', 'quotations', 'follow-up-tasks', 'whatsapp-crm', 'delivery', 'kitchen', 'products', 'production-center', 'recipe-calculator']
 };
 
 const getStoredUser = (): CurrentUser | null => {
@@ -101,6 +105,7 @@ function App() {
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [kitchenTasks, setKitchenTasks] = useState<KitchenTask[]>([]);
   const [deliveryTasks, setDeliveryTasks] = useState<DeliveryTask[]>([]);
+  const [invoices, setInvoices] = useState<InvoiceRecord[]>([]);
   const [whatsappTemplates, setWhatsappTemplates] = useState<WhatsAppTemplate[]>(templateData);
   const [settings, setSettings] = useState<SettingField[]>(settingsData);
   const [followUpBadge, setFollowUpBadge] = useState(0);
@@ -137,7 +142,7 @@ function App() {
       }
 
       try {
-        const [supabaseOrders, supabaseCustomers, supabaseKitchenTasks, supabaseDeliveryTasks] = await Promise.all([
+        const [supabaseOrders, supabaseCustomers, supabaseKitchenTasks, supabaseDeliveryTasks, supabaseInvoices] = await Promise.all([
           loadOrdersFromSupabase(),
           loadCustomersFromSupabase(),
           loadKitchenTasksFromSupabase(),
@@ -149,6 +154,7 @@ function App() {
         setOrders(supabaseOrders);
         setKitchenTasks(supabaseKitchenTasks);
         setDeliveryTasks(supabaseDeliveryTasks);
+        setInvoices(supabaseInvoices);
         setCustomers(supabaseCustomers);
         setOrderSource('Supabase');
         setCustomerSource('Supabase');
@@ -195,6 +201,14 @@ useEffect(() => {
   if (activePage !== 'orders') return;
 
   reloadOrdersFromSupabase();
+}, [activePage]);
+
+useEffect(() => {
+  if (activePage !== 'dashboard') return;
+
+  loadInvoicesFromSupabase()
+    .then(setInvoices)
+    .catch((error) => console.error('Dashboard invoice refresh error:', error));
 }, [activePage]);
 
   const allowedPages = currentUser ? rolePermissions[currentUser.role] : [];
@@ -290,7 +304,7 @@ useEffect(() => {
   const handleAddOrder = async (newOrder: Order) => {
     try {
       await createFullOrderWorkflow(newOrder, orders);
-      const [supabaseOrders, supabaseCustomers, supabaseKitchenTasks, supabaseDeliveryTasks] = await Promise.all([
+      const [supabaseOrders, supabaseCustomers, supabaseKitchenTasks, supabaseDeliveryTasks, supabaseInvoices] = await Promise.all([
         loadOrdersFromSupabase(),
         loadCustomersFromSupabase(),
         loadKitchenTasksFromSupabase(),
@@ -304,6 +318,7 @@ useEffect(() => {
       setOrders(supabaseOrders);
       setKitchenTasks(supabaseKitchenTasks);
       setDeliveryTasks(supabaseDeliveryTasks);
+      setInvoices(supabaseInvoices);
       setOrderError('');
     } catch (error) {
       console.error('Failed to save order to Supabase:', error);
@@ -320,7 +335,7 @@ useEffect(() => {
     try {
       const savedOrder = await updateOrderInSupabase(updatedOrder);
       setOrderSource('Supabase');
-      const [supabaseOrders, supabaseCustomers, supabaseKitchenTasks, supabaseDeliveryTasks] = await Promise.all([
+      const [supabaseOrders, supabaseCustomers, supabaseKitchenTasks, supabaseDeliveryTasks, supabaseInvoices] = await Promise.all([
         loadOrdersFromSupabase(),
         loadCustomersFromSupabase(),
         loadKitchenTasksFromSupabase(),
@@ -332,6 +347,7 @@ useEffect(() => {
       setCustomers(supabaseCustomers);
       setKitchenTasks(supabaseKitchenTasks);
       setDeliveryTasks(supabaseDeliveryTasks);
+      setInvoices(supabaseInvoices);
       setCustomerSource('Supabase');
       setOrderError('');
     } catch (error) {
@@ -353,7 +369,7 @@ useEffect(() => {
 
     try {
       await markOrderPaidInSupabase(orderId);
-      const [supabaseOrders, supabaseCustomers, supabaseKitchenTasks, supabaseDeliveryTasks] = await Promise.all([
+      const [supabaseOrders, supabaseCustomers, supabaseKitchenTasks, supabaseDeliveryTasks, supabaseInvoices] = await Promise.all([
         loadOrdersFromSupabase(),
         loadCustomersFromSupabase(),
         loadKitchenTasksFromSupabase(),
@@ -365,6 +381,7 @@ useEffect(() => {
       setCustomers(supabaseCustomers);
       setKitchenTasks(supabaseKitchenTasks);
       setDeliveryTasks(supabaseDeliveryTasks);
+      setInvoices(supabaseInvoices);
       setOrderSource('Supabase');
       setCustomerSource('Supabase');
       setOrderError('');
@@ -388,7 +405,11 @@ useEffect(() => {
     }
   };
 
-  const updateKitchenStatus = async (orderId: string, newStatus: 'Preparing' | 'Ready' | 'Completed') => {
+  const updateKitchenStatus = async (
+    orderId: string,
+    newStatus: 'Preparing' | 'Ready' | 'Completed',
+    taskContext?: KitchenTaskUpdateContext
+  ) => {
     const orderToUpdate = orders.find((order) => order.id === orderId);
     if (orderToUpdate) {
       const updatedWorkflowStatus: Order['workflowStatus'] =
@@ -399,18 +420,28 @@ useEffect(() => {
         workflowStatus: updatedWorkflowStatus
       };
       try {
-        await updateKitchenTaskStatus(orderToUpdate.orderNo || orderToUpdate.id, newStatus);
-        await handleUpdateOrder(updatedOrder);
+        await syncKitchenStatusForOrder({
+          ...taskContext,
+          orderId: taskContext?.orderId || orderToUpdate.supabaseId,
+          orderNo: taskContext?.orderNo || orderToUpdate.orderNo || orderToUpdate.id,
+          linkedOrderId: orderToUpdate.id,
+          targetStatus: newStatus,
+          order: orderToUpdate
+        });
+        setOrders((currentOrders) => currentOrders.map((order) => (
+          order.id === orderToUpdate.id ? updatedOrder : order
+        )));
         await createAutomationLog('Kitchen Status Updated', `Kitchen task for ${orderToUpdate.orderNo || orderToUpdate.id} updated to ${newStatus}`);
         setKitchenTasks(await loadKitchenTasksFromSupabase());
         await reloadOrdersFromSupabase();
       } catch (error) {
         console.error('Kitchen update error', error);
+        throw error;
       }
     }
   };
 
-  const updateDeliveryStatus = async (orderId: string, newStatus: 'Assigned' | 'Out for Delivery' | 'Delivered', driverName?: string) => {
+  const updateDeliveryStatus = async (orderId: string, newStatus: 'Assigned' | 'Out for Delivery' | 'Delivered', driverName?: string, driverDetails?: DeliveryDriverDetails) => {
     const orderToUpdate = orders.find((order) => order.id === orderId);
     if (orderToUpdate) {
       const updatedWorkflowStatus: Order['workflowStatus'] =
@@ -425,7 +456,7 @@ useEffect(() => {
         workflowStatus: updatedWorkflowStatus
       };
       try {
-        await updateDeliveryTaskStatus(orderToUpdate.orderNo || orderToUpdate.id, newStatus, driverName);
+        await updateDeliveryTaskStatus(orderToUpdate.orderNo || orderToUpdate.id, newStatus, driverName, driverDetails);
         await handleUpdateOrder(updatedOrder);
         await createAutomationLog('Delivery Status Updated', `${orderToUpdate.orderNo || orderToUpdate.id} delivery status changed to ${newStatus}`);
         setDeliveryTasks(await loadDeliveryTasksFromSupabase());
@@ -465,7 +496,7 @@ useEffect(() => {
 
     switch (activePage) {
       case 'dashboard':
-        return <DashboardPage orders={orders} customers={customers} kitchenTasks={kitchenTasks} deliveryTasks={deliveryTasks} summary={summary} loading={!isInitialized} onNavigate={setActivePage} />;
+        return <DashboardPage orders={orders} customers={customers} kitchenTasks={kitchenTasks} deliveryTasks={deliveryTasks} invoices={invoices} summary={summary} followUpDueCount={followUpBadge} loading={!isInitialized} onNavigate={setActivePage} />;
       case 'orders':
         return <OrdersPage orders={orders} products={products} orderSource={orderSource} orderError={orderError} onAddOrder={handleAddOrder} onUpdateOrder={handleUpdateOrder} onMarkOrderPaid={handleMarkOrderPaid} onDeleteOrder={handleDeleteOrder} />;
       case 'customers':
@@ -488,6 +519,10 @@ useEffect(() => {
         return <QuotationPage />;
       case 'follow-up-tasks':
         return <FollowUpTasksPage />;
+      case 'production-center':
+        return <ProductionCenterPage orders={orders} />;
+      case 'recipe-calculator':
+        return <RecipeCalculatorPage />;
       case 'whatsapp-crm':
         return <WhatsAppCenterPage orders={orders} customers={customers} deliveryTasks={deliveryTasks} kitchenTasks={kitchenTasks} />;
       case 'automation':
@@ -497,7 +532,7 @@ useEffect(() => {
       case 'settings':
         return <SettingsPage settings={settings} onResetDemoData={handleResetDemoData} onExportBackup={handleExportBackup} onImportBackup={handleImportBackup} />;
       default:
-        return <DashboardPage orders={orders} customers={customers} kitchenTasks={kitchenTasks} deliveryTasks={deliveryTasks} summary={summary} loading={!isInitialized} onNavigate={setActivePage} />;
+        return <DashboardPage orders={orders} customers={customers} kitchenTasks={kitchenTasks} deliveryTasks={deliveryTasks} invoices={invoices} summary={summary} followUpDueCount={followUpBadge} loading={!isInitialized} onNavigate={setActivePage} />;
     }
   };
 
@@ -507,16 +542,16 @@ useEffect(() => {
 
   return (
     <div className="min-h-screen bg-[#0F172A] text-cream">
-      <div className="mx-auto flex min-h-screen max-w-[1600px] flex-col md:flex-row">
+      <div className="mx-auto flex min-h-screen max-w-[1600px] flex-col md:flex-row md:items-start">
         <Sidebar active={activePage} onSelect={setActivePage} currentUser={currentUser} allowedPages={allowedPages} onLogout={handleLogout} followUpBadge={followUpBadge} />
 
-        <main className="min-w-0 flex-1 p-4 md:p-7">
-          <div className="mb-6 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+        <main className="min-w-0 flex-1 p-3 md:p-4 xl:p-5">
+          <div className="mb-3.5 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
             <div>
-              <p className="text-sm uppercase tracking-[0.3em] text-softGold">Welcome back</p>
-              <h2 className="text-3xl font-semibold text-white">{hasPageAccess ? pageTitles[activePage] : 'Access Denied'}</h2>
+              <p className="text-xs uppercase tracking-[0.24em] text-softGold">Welcome back</p>
+              <h2 className="mt-0.5 text-2xl font-semibold text-white">{hasPageAccess ? pageTitles[activePage] : 'Access Denied'}</h2>
             </div>
-            <div className="rounded-xl border border-[#334155] bg-[#1E293B] px-4 py-3 text-sm text-[#94A3B8] shadow-panel">
+            <div className="rounded-xl border border-[#334155] bg-[#1E293B] px-3.5 py-2.5 text-xs text-[#94A3B8] shadow-panel">
               Premium bakery operations interface
             </div>
           </div>

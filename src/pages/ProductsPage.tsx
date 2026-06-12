@@ -420,26 +420,27 @@ export default function ProductsPage({ products, setProducts, readOnly = false }
   };
 
   return (
-    <div className="space-y-6">
-      <section className="rounded-[32px] border border-white/10 bg-[#141414] p-6 shadow-panel">
+    <div className="space-y-4">
+      <section className="rounded-[20px] border border-white/10 bg-[#141414] p-4 shadow-panel md:p-5">
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div>
-            <h3 className="text-2xl font-semibold text-white">Product Catalog</h3>
+            <p className="text-xs uppercase tracking-[0.24em] text-softGold">Production Catalog</p>
+            <h3 className="mt-1.5 text-2xl font-semibold text-white">Product Catalog</h3>
             <p className="mt-2 text-sm text-slate-400">Manage product pricing, categories, stock status, and premium tart offerings in one pane.</p>
           </div>
           <div className="flex flex-wrap gap-3">
-            <div className="rounded-3xl border border-white/10 bg-white/5 px-5 py-3 text-sm text-slate-300">
+            <div className="rounded-xl border border-white/10 bg-white/5 px-3.5 py-2.5 text-xs text-slate-300">
               {activeCount} available for orders
             </div>
-            <div className="rounded-3xl border border-white/10 bg-white/5 px-5 py-3 text-sm text-slate-300">
+            <div className="rounded-xl border border-white/10 bg-white/5 px-3.5 py-2.5 text-xs text-slate-300">
               Source: {isLoadingProducts ? 'Loading...' : dataSource}
             </div>
             {readOnly ? (
-              <div className="rounded-3xl border border-gold/30 bg-gold/10 px-5 py-3 text-sm font-semibold text-softGold">
+              <div className="rounded-xl border border-gold/30 bg-gold/10 px-3.5 py-2.5 text-xs font-semibold text-softGold">
                 View Only
               </div>
             ) : (
-              <button onClick={openAddModal} className="rounded-3xl bg-gold px-5 py-3 text-sm font-semibold text-charcoal transition hover:bg-[#b9985f]">
+              <button onClick={openAddModal} className="rounded-xl bg-gold px-4 py-2.5 text-sm font-semibold text-charcoal transition hover:bg-[#b9985f]">
                 Add Product
               </button>
             )}
@@ -448,17 +449,17 @@ export default function ProductsPage({ products, setProducts, readOnly = false }
       </section>
 
       {supabaseError && (
-        <section className="rounded-[28px] border border-rose-500/20 bg-rose-500/10 p-5 shadow-panel">
+        <section className="rounded-[18px] border border-rose-500/20 bg-rose-500/10 p-4 shadow-panel">
           <p className="text-xs uppercase tracking-[0.28em] text-rose-200">Supabase connection error</p>
           <p className="mt-3 text-sm leading-6 text-rose-100">{supabaseError}</p>
           <p className="mt-3 text-sm text-slate-300">Products are currently shown from localStorage fallback.</p>
         </section>
       )}
 
-      <div className="grid gap-6 lg:grid-cols-3">
+      <div className="grid gap-4 lg:grid-cols-3">
         {products.map((product) => (
-          <div key={product.id} className="overflow-hidden rounded-[32px] border border-white/10 bg-[#0f0f0f] shadow-panel transition hover:-translate-y-1 hover:bg-[#141414]">
-            <div className="h-56 w-full overflow-hidden rounded-t-[32px] bg-[#141414]">
+          <div key={product.id} className="overflow-hidden rounded-[18px] border border-white/10 bg-[#0f0f0f] shadow-panel transition hover:border-gold/30 hover:bg-[#141414]">
+            <div className="h-44 w-full overflow-hidden bg-[#141414]">
               <img
                 src={getProductImageUrl(product)}
                 alt={product.name}
@@ -468,27 +469,27 @@ export default function ProductsPage({ products, setProducts, readOnly = false }
                 }}
               />
             </div>
-            <div className="p-6">
-              <div className="mb-4 flex items-center justify-between gap-3">
+            <div className="p-4">
+              <div className="mb-3 flex items-center justify-between gap-3">
                 <span className="rounded-full bg-white/5 px-3 py-1 text-xs uppercase tracking-[0.2em] text-slate-300">{product.category}</span>
                 <span className={`rounded-full border px-3 py-1 text-xs font-semibold ${statusClass(product.status)}`}>{product.status}</span>
               </div>
-              <h4 className="text-xl font-semibold text-white">{product.name}</h4>
-              <p className="mt-3 text-sm leading-6 text-slate-400">{product.description}</p>
-              <div className="mt-6 flex items-center justify-between gap-3">
+              <h4 className="text-lg font-semibold text-white">{product.name}</h4>
+              <p className="mt-2 text-sm leading-5 text-slate-400">{product.description}</p>
+              <div className="mt-4 flex items-center justify-between gap-3">
                 <div>
                   <p className="text-xs uppercase tracking-[0.2em] text-softGold">Price</p>
                   <p className="text-2xl font-semibold text-white">{formatRM(getProductUnitPrice(product))}</p>
                 </div>
                 {!readOnly && (
                   <div className="flex gap-2">
-                    <button onClick={() => openEditModal(product)} className="rounded-3xl border border-white/10 bg-white/5 px-4 py-2 text-sm text-slate-200 transition hover:bg-white/10">
+                    <button onClick={() => openEditModal(product)} className="rounded-xl border border-white/10 bg-white/5 px-3.5 py-2 text-sm text-slate-200 transition hover:bg-white/10">
                       Edit
                     </button>
                     <button
                       type="button"
                       onClick={() => setProductToDelete(product)}
-                      className="rounded-3xl border border-rose-500/20 bg-rose-500/10 px-4 py-2 text-sm text-rose-200 transition hover:bg-rose-500/20"
+                      className="rounded-xl border border-rose-500/20 bg-rose-500/10 px-3.5 py-2 text-sm text-rose-200 transition hover:bg-rose-500/20"
                     >
                       Delete
                     </button>

@@ -11,8 +11,9 @@ html, body, #root {
 }
 
 body {
-  @apply bg-charcoal text-cream antialiased;
-  font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  @apply text-cream antialiased;
+  background: #010102;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 }
 
 * {
@@ -20,5 +21,172 @@ body {
 }
 
 ::selection {
-  background: rgba(198, 169, 111, 0.25);
+  background: rgba(94, 106, 210, 0.32);
+}
+
+.design-linear-page {
+  --ds-primary: #5e6ad2;
+  --ds-primary-hover: #828fff;
+  --ds-ink: #f7f8f8;
+  --ds-ink-muted: #d0d6e0;
+  --ds-ink-subtle: #8a8f98;
+  --ds-ink-tertiary: #62666d;
+  --ds-canvas: #010102;
+  --ds-surface-1: #0f1011;
+  --ds-surface-2: #141516;
+  --ds-surface-3: #18191a;
+  --ds-hairline: #23252a;
+  --ds-hairline-strong: #34343a;
+  color: var(--ds-ink);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  letter-spacing: 0;
+}
+
+.design-linear-page *,
+.design-linear-page *::before,
+.design-linear-page *::after {
+  letter-spacing: 0;
+}
+
+.design-linear-page .ds-hero {
+  border: 1px solid var(--ds-hairline);
+  border-radius: 16px;
+  background: var(--ds-surface-1);
+  box-shadow: none;
+}
+
+.design-linear-page .ds-card,
+.design-linear-page [class*="bg-[#111111]"],
+.design-linear-page [class*="bg-[#111827]"],
+.design-linear-page [class*="bg-[#141414]"],
+.design-linear-page [class*="bg-[#1E293B]"] {
+  border-color: var(--ds-hairline);
+  background-color: var(--ds-surface-1);
+  box-shadow: none;
+}
+
+.design-linear-page .ds-card:hover,
+.design-linear-page [class*="hover:border-gold"]:hover,
+.design-linear-page [class*="hover:border-[#C8A96B]"]:hover {
+  border-color: var(--ds-hairline-strong);
+  background-color: var(--ds-surface-2);
+}
+
+.design-linear-page [class*="bg-[#0F172A]"],
+.design-linear-page [class*="bg-[#0f0f0f]"] {
+  background-color: var(--ds-canvas);
+}
+
+.design-linear-page [class*="border-[#334155]"],
+.design-linear-page [class*="border-[#263348]"],
+.design-linear-page [class*="border-white/10"] {
+  border-color: var(--ds-hairline);
+}
+
+.design-linear-page [class*="divide-[#263348]"] > :not([hidden]) ~ :not([hidden]),
+.design-linear-page [class*="divide-[#334155]"] > :not([hidden]) ~ :not([hidden]) {
+  border-color: var(--ds-hairline);
+}
+
+.design-linear-page [class*="text-[#F8FAFC]"],
+.design-linear-page [class*="text-[#E2E8F0]"],
+.design-linear-page [class*="text-white"] {
+  color: var(--ds-ink);
+}
+
+.design-linear-page [class*="text-[#94A3B8]"],
+.design-linear-page [class*="text-slate-400"],
+.design-linear-page [class*="text-slate-300"] {
+  color: var(--ds-ink-subtle);
+}
+
+.design-linear-page [class*="text-[#64748B]"],
+.design-linear-page [class*="text-slate-500"],
+.design-linear-page [class*="text-slate-600"] {
+  color: var(--ds-ink-tertiary);
+}
+
+.design-linear-page [class*="text-[#C8A96B]"],
+.design-linear-page [class*="text-[#E4C98E]"],
+.design-linear-page [class*="text-softGold"],
+.design-linear-page [class*="text-gold"] {
+  color: var(--ds-primary);
+}
+
+.design-linear-page [class~="bg-[#C8A96B]"],
+.design-linear-page [class~="bg-gold"] {
+  background-color: var(--ds-primary);
+}
+
+.design-linear-page input,
+.design-linear-page select,
+.design-linear-page textarea {
+  min-height: 44px;
+  border-color: var(--ds-hairline);
+  border-radius: 8px;
+  background: var(--ds-surface-1);
+  color: var(--ds-ink);
+  box-shadow: none;
+}
+
+.design-linear-page input:focus,
+.design-linear-page select:focus,
+.design-linear-page textarea:focus {
+  border-color: var(--ds-primary);
+  outline: 2px solid rgba(94, 106, 210, 0.28);
+  outline-offset: 0;
+}
+
+.design-linear-page button {
+  border-radius: 8px;
+}
+
+.design-linear-page .ds-primary-button {
+  min-height: 40px;
+  border: 1px solid var(--ds-primary);
+  border-radius: 8px;
+  background: var(--ds-primary);
+  color: #ffffff;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.design-linear-page .ds-primary-button:hover {
+  border-color: var(--ds-primary-hover);
+  background: var(--ds-primary-hover);
+}
+
+.design-linear-page .ds-secondary-button {
+  min-height: 40px;
+  border: 1px solid var(--ds-hairline);
+  border-radius: 8px;
+  background: var(--ds-surface-1);
+  color: var(--ds-ink);
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.design-linear-page .ds-secondary-button:hover {
+  border-color: var(--ds-hairline-strong);
+  background: var(--ds-surface-2);
+}
+
+.design-linear-page .ds-eyebrow {
+  color: var(--ds-primary);
+  font-size: 12px;
+  font-weight: 500;
+  text-transform: uppercase;
+}
+
+.design-linear-page .ds-page-title {
+  color: var(--ds-ink);
+  font-size: clamp(1.75rem, 3vw, 2.5rem);
+  font-weight: 600;
+  line-height: 1.15;
+}
+
+.design-linear-page .ds-page-copy {
+  color: var(--ds-ink-subtle);
+  font-size: 14px;
+  line-height: 1.5;
 }

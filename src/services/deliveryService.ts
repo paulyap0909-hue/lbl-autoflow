@@ -12,7 +12,14 @@ type DeliveryTaskRow = {
   delivery_date?: string | null;
   delivery_time?: string | null;
   driver_name?: string | null;
+  driver_phone?: string | null;
+  driver_type?: string | null;
   status?: DeliveryTask['deliveryStatus'] | string | null;
+};
+
+export type DeliveryDriverDetails = {
+  driverPhone?: string;
+  driverType?: DeliveryTask['driverType'] | string;
 };
 
 const normalizeDeliveryStatus = (status: DeliveryTaskRow['status']): DeliveryTask['deliveryStatus'] => {
@@ -29,6 +36,8 @@ const deliveryTaskFromRow = (row: DeliveryTaskRow): DeliveryTask & DeliveryTaskR
   delivery_date: row.delivery_date,
   delivery_time: row.delivery_time,
   driver_name: row.driver_name,
+  driver_phone: row.driver_phone,
+  driver_type: row.driver_type,
   orderId: row.order_no || row.order_id || '',
   customerName: row.customer_name || 'Customer',
   phone: row.phone || '',
@@ -36,6 +45,8 @@ const deliveryTaskFromRow = (row: DeliveryTaskRow): DeliveryTask & DeliveryTaskR
   deliveryDate: row.delivery_date || '',
   deliveryTime: row.delivery_time || '',
   driverName: row.driver_name || '',
+  driverPhone: row.driver_phone || '',
+  driverType: row.driver_type as DeliveryTask['driverType'] | undefined,
   deliveryStatus: normalizeDeliveryStatus(row.status)
 });
 
@@ -111,7 +122,8 @@ export async function updateDeliveryTaskStatusForOrder(order: Order) {
 export async function updateDeliveryTaskStatus(
   orderNo: string,
   status: DeliveryTask['deliveryStatus'],
-  driverName?: string
+  driverName?: string,
+  driverDetails?: DeliveryDriverDetails
 ) {
   const orderKey = String(orderNo).trim();
   const isNumericId = /^\d+$/.test(orderKey);
@@ -120,6 +132,12 @@ export async function updateDeliveryTaskStatus(
 
   if (driverName !== undefined) {
     patch.driver_name = driverName;
+  }
+  if (driverDetails?.driverPhone !== undefined) {
+    patch.driver_phone = driverDetails.driverPhone;
+  }
+  if (driverDetails?.driverType !== undefined) {
+    patch.driver_type = driverDetails.driverType;
   }
 
   let query = supabase

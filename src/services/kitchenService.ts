@@ -17,6 +17,25 @@ type KitchenTaskRow = {
   ready_time?: string | null;
   required_ready_time?: string | null;
   status?: KitchenTask['kitchenStatus'] | string | null;
+  completed_at?: string | null;
+  updated_at?: string | null;
+};
+
+export type KitchenTaskUpdateContext = {
+  taskId?: string | number | null;
+  orderId?: string | number | null;
+  orderNo?: string | number | null;
+  linkedOrderId?: string | number | null;
+};
+
+export type KitchenStatusSyncParams = KitchenTaskUpdateContext & {
+  targetStatus: KitchenTask['kitchenStatus'];
+  order?: Order | null;
+};
+
+export type KitchenStatusSyncResult = {
+  kitchenTask: (KitchenTask & KitchenTaskRow) | KitchenTaskRow | null;
+  order: Record<string, unknown> | null;
 };
 
 const getReadyTime = (order: Order) => {
@@ -27,7 +46,10 @@ const getReadyTime = (order: Order) => {
 };
 
 const normalizeKitchenStatus = (status: KitchenTaskRow['status']): KitchenTask['kitchenStatus'] => {
-  if (status === 'Preparing' || status === 'Ready') return status;
+  const normalized = String(status ?? '').trim().toLowerCase();
+  if (normalized === 'preparing') return 'Preparing';
+  if (normalized === 'ready') return 'Ready';
+  if (normalized === 'completed' || normalized === 'complete') return 'Completed';
   return 'New';
 };
 
@@ -59,10 +81,12 @@ const kitchenTaskFromRow = (row: KitchenTaskRow): KitchenTask & KitchenTaskRow =
   id: row.id,
   order_id: row.order_id,
   order_no: row.order_no,
-  status: normalizeKitchenStatus(row.status),
+  status: row.status ? normalizeKitchenStatus(row.status) : undefined,
   delivery_date: row.delivery_date,
   delivery_time: row.delivery_time,
   ready_time: row.ready_time,
+  completed_at: row.completed_at,
+  updated_at: row.updated_at,
   orderId: row.order_no || row.order_id || '',
   product: row.product || 'Mini Tart',
   flavours: row.flavours?.length ? row.flavours : [row.product || 'Mini Tart'],
@@ -91,7 +115,7 @@ export async function loadKitchenTasksFromSupabase() {
   return tasks;
 }
 
-export async function createKitchenTaskForOrder(order: Order) {
+export async function createKitchenTaskForOrder(order: Order, initialStatus: KitchenTask['kitchenStatus'] = 'New') {
   const orderNo = order.orderNo || order.id;
   const query = supabase.from('kitchen_tasks').select('*');
   const { data: existing, error: existingError } = order.supabaseId
@@ -117,7 +141,7 @@ export async function createKitchenTaskForOrder(order: Order) {
       delivery_date: order.deliveryDate,
       delivery_time: order.deliveryTime,
       ready_time: getReadyTime(order),
-      status: 'New'
+      status: normalizeKitchenStatus(initialStatus)
     })
     .select()
     .single();
@@ -132,36 +156,186 @@ export async function createKitchenTaskForOrder(order: Order) {
 }
 
 export async function updateKitchenTaskStatusForOrder(order: Order) {
-  const { error } = await supabase
-    .from('kitchen_tasks')
-    .update({
-      status: order.kitchenStatus
-    })
-    .eq('order_no', order.orderNo || order.id);
+  return syncKitchenStatusForOrder({
+    orderId: order.supabaseId,
+    orderNo: order.orderNo || order.id,
+    linkedOrderId: order.id,
+    targetStatus: order.kitchenStatus,
+    order
+  });
+}
 
-  if (error) {
-    console.error('Kitchen update error', error);
+const toLookupValue = (value: string | number | null | undefined) => {
+  const normalized = String(value ?? '').trim();
+  return normalized || null;
+};
+
+const uniqueLookupValues = (values: Array<string | number | null | undefined>) =>
+  Array.from(new Set(values.map(toLookupValue).filter((value): value is string => Boolean(value))));
+
+const getSupabaseErrorDetails = (error: unknown) => {
+  const record = error && typeof error === 'object' ? error as Record<string, unknown> : {};
+  return {
+    message: String(record.message ?? error ?? 'Unknown Supabase error'),
+    code: String(record.code ?? ''),
+    details: String(record.details ?? ''),
+    hint: String(record.hint ?? '')
+  };
+};
+
+const isNumericLookup = (value: string) => /^\d+$/.test(value);
+
+const buildKitchenLookupValues = (context: KitchenTaskUpdateContext, order?: Order | null) => ({
+  taskIds: uniqueLookupValues([context.taskId]),
+  orderIds: uniqueLookupValues([context.orderId, order?.supabaseId]).filter(isNumericLookup),
+  orderNos: uniqueLookupValues([context.orderNo, order?.orderNo, order?.id, context.linkedOrderId])
+});
+
+const selectKitchenTasksBy = async (column: 'id' | 'order_id' | 'order_no', value: string) => {
+  const { data, error } = await supabase
+    .from('kitchen_tasks')
+    .select('*')
+    .eq(column, value);
+
+  if (error) throw error;
+  return (data ?? []) as KitchenTaskRow[];
+};
+
+const updateKitchenTasksBy = async (column: 'id' | 'order_id' | 'order_no', value: string, status: KitchenTask['kitchenStatus']) => {
+  const updatePayload = { status };
+  const { data, error } = await supabase
+    .from('kitchen_tasks')
+    .update(updatePayload)
+    .eq(column, value)
+    .select('*');
+
+  if (error) throw error;
+  return (data ?? []) as KitchenTaskRow[];
+};
+
+const buildOrderKitchenStatusPayload = (status: KitchenTask['kitchenStatus']) => ({
+  kitchen_status: status
+});
+
+const updateOrderKitchenStatus = async (params: KitchenStatusSyncParams, status: KitchenTask['kitchenStatus']) => {
+  const orderIds = uniqueLookupValues([params.orderId, params.order?.supabaseId]).filter(isNumericLookup);
+  const orderNos = uniqueLookupValues([params.orderNo, params.order?.orderNo, params.order?.id, params.linkedOrderId]);
+  const updatePayload = buildOrderKitchenStatusPayload(status);
+
+  for (const id of orderIds) {
+    const { data, error } = await supabase
+      .from('orders')
+      .update(updatePayload)
+      .eq('id', id)
+      .select('*');
+
+    if (error) throw error;
+    if (data?.[0]) return data[0] as Record<string, unknown>;
+  }
+
+  for (const orderNo of orderNos) {
+    const { data, error } = await supabase
+      .from('orders')
+      .update(updatePayload)
+      .eq('order_no', orderNo)
+      .select('*');
+
+    if (error) throw error;
+    if (data?.[0]) return data[0] as Record<string, unknown>;
+  }
+
+  return null;
+};
+
+export async function syncKitchenStatusForOrder(params: KitchenStatusSyncParams): Promise<KitchenStatusSyncResult> {
+  const normalizedStatus = normalizeKitchenStatus(params.targetStatus);
+  const lookups = buildKitchenLookupValues(params, params.order);
+  const foundTasks: KitchenTaskRow[] = [];
+  let fallbackTaskCreationAttempted = false;
+
+  try {
+    for (const taskId of lookups.taskIds) {
+      foundTasks.push(...await selectKitchenTasksBy('id', taskId));
+      if (foundTasks.length > 0) break;
+    }
+
+    if (foundTasks.length === 0) {
+      for (const orderId of lookups.orderIds) {
+        foundTasks.push(...await selectKitchenTasksBy('order_id', orderId));
+        if (foundTasks.length > 0) break;
+      }
+    }
+
+    if (foundTasks.length === 0) {
+      for (const orderNo of lookups.orderNos) {
+        foundTasks.push(...await selectKitchenTasksBy('order_no', orderNo));
+        if (foundTasks.length > 0) break;
+      }
+    }
+
+    if (foundTasks.length === 0 && params.order) {
+      fallbackTaskCreationAttempted = true;
+      foundTasks.push(await createKitchenTaskForOrder(params.order, normalizedStatus) as KitchenTaskRow);
+    }
+
+    if (foundTasks.length === 0) {
+      throw new Error('No kitchen task found and no order data was available to create one.');
+    }
+
+    const syncTaskIds = uniqueLookupValues(foundTasks.map((task) => task.id));
+    const syncOrderIds = uniqueLookupValues([...lookups.orderIds, ...foundTasks.map((task) => task.order_id)]);
+    const syncOrderNos = uniqueLookupValues([...lookups.orderNos, ...foundTasks.map((task) => task.order_no)]);
+    const updatedTasks: KitchenTaskRow[] = [];
+
+    for (const taskId of syncTaskIds) {
+      updatedTasks.push(...await updateKitchenTasksBy('id', taskId, normalizedStatus));
+    }
+    for (const orderId of syncOrderIds) {
+      updatedTasks.push(...await updateKitchenTasksBy('order_id', orderId, normalizedStatus));
+    }
+    for (const orderNo of syncOrderNos) {
+      updatedTasks.push(...await updateKitchenTasksBy('order_no', orderNo, normalizedStatus));
+    }
+
+    const uniqueUpdatedTasks = updatedTasks.reduce<KitchenTaskRow[]>((acc, task) => {
+      const taskId = toLookupValue(task.id);
+      if (!taskId || !acc.some((existing) => toLookupValue(existing.id) === taskId)) acc.push(task);
+      return acc;
+    }, []);
+    if (uniqueUpdatedTasks.length === 0) {
+      throw new Error('Kitchen task update matched no rows. Check task links or Supabase UPDATE policy.');
+    }
+
+    const updatedOrder = await updateOrderKitchenStatus(params, normalizedStatus);
+    if (!updatedOrder) {
+      throw new Error('Kitchen task updated, but the linked order could not be found or updated.');
+    }
+
+    return {
+      kitchenTask: kitchenTaskFromRow(uniqueUpdatedTasks[0]),
+      order: updatedOrder
+    };
+  } catch (error) {
+    console.error('Kitchen status sync failed:', {
+      taskId: params.taskId ?? null,
+      orderId: params.orderId ?? params.order?.supabaseId ?? null,
+      orderNo: params.orderNo ?? params.order?.orderNo ?? params.order?.id ?? null,
+      targetStatus: normalizedStatus,
+      fallbackTaskCreationAttempted,
+      ...getSupabaseErrorDetails(error)
+    });
     throw error;
   }
 }
 
-export async function updateKitchenTaskStatus(orderNo: string, status: KitchenTask['kitchenStatus']) {
-  const orderKey = String(orderNo).trim();
-  const isNumericId = /^\d+$/.test(orderKey);
-
-  let query = supabase
-    .from('kitchen_tasks')
-    .update({ status });
-
-  const { data, error } = isNumericId
-    ? await query.eq('order_id', Number(orderKey)).select().single()
-    : await query.eq('order_no', orderKey).select().single();
-
-  if (error) {
-    console.error('Kitchen update error', error);
-    throw error;
-  }
-
-  return data;
-  console.log('Kitchen status updated', { orderNo, status });
+export async function updateKitchenTaskStatus(
+  lookup: string | KitchenTaskUpdateContext,
+  status: KitchenTask['kitchenStatus'],
+  order?: Order
+) {
+  const context: KitchenTaskUpdateContext = typeof lookup === 'string'
+    ? { orderId: lookup, orderNo: lookup, linkedOrderId: lookup }
+    : lookup;
+  const result = await syncKitchenStatusForOrder({ ...context, targetStatus: status, order });
+  return result.kitchenTask;
 }

@@ -146,14 +146,14 @@ function KpiCard({
   tone: string;
 }) {
   return (
-    <article className="min-h-[104px] rounded-[16px] border border-[#334155] bg-[#111111] p-3.5 shadow-panel">
+    <article className="ds-card min-h-[104px] rounded-xl border border-[#334155] bg-[#111111] p-4">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[#64748B]">{label}</p>
           <p className="mt-2.5 truncate text-2xl font-semibold text-white">{value}</p>
           <p className="mt-1 truncate text-xs text-[#94A3B8]">{note}</p>
         </div>
-        <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border ${tone}`}>
+        <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border ${tone}`}>
           <Icon size={17} />
         </span>
       </div>
@@ -191,7 +191,7 @@ function LeadCard({
   );
 
   return (
-    <article className="rounded-[14px] border border-[#334155] bg-[#111111] p-3 shadow-[0_12px_30px_rgba(2,6,23,0.18)] transition hover:border-[#C8A96B]/35">
+    <article className="ds-card rounded-xl border border-[#334155] bg-[#111111] p-3 transition">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <h3 className="truncate text-sm font-semibold text-white">{lead.companyName || 'Unnamed company'}</h3>
@@ -442,19 +442,19 @@ export default function CorporateSalesDashboardPage() {
   ];
 
   return (
-    <div className="space-y-4 text-[#F8FAFC]">
+    <div className="design-linear-page space-y-5 text-[#F8FAFC]">
       {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
 
-      <section className="rounded-[20px] border border-[#334155] bg-[#111111] p-4 shadow-panel md:p-5">
+      <section className="ds-hero p-5 md:p-6">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.22em] text-[#C8A96B]">Corporate Sales OS</p>
-            <h1 className="mt-1.5 text-2xl font-semibold text-white">Corporate Sales Pipeline</h1>
-            <p className="mt-2 max-w-3xl text-sm leading-6 text-[#94A3B8]">
+            <p className="ds-eyebrow">Corporate Sales OS</p>
+            <h1 className="ds-page-title mt-2">Corporate Sales Pipeline</h1>
+            <p className="ds-page-copy mt-2 max-w-3xl">
               Track office tea break, corporate gifting and event dessert opportunities from lead to order.
             </p>
           </div>
-          <span className="w-fit rounded-xl border border-emerald-400/25 bg-emerald-400/10 px-3 py-2 text-xs font-semibold text-emerald-300">
+          <span className="ds-secondary-button flex w-fit items-center px-3 text-xs text-[#8a8f98]">
             {loading ? 'Loading Supabase...' : 'Source: Supabase'}
           </span>
         </div>
@@ -470,7 +470,7 @@ export default function CorporateSalesDashboardPage() {
         {kpis.map((item) => <KpiCard key={item.label} {...item} />)}
       </section>
 
-      <section className="rounded-[18px] border border-[#334155] bg-[#111111] p-3.5 shadow-panel">
+      <section className="ds-card rounded-xl border border-[#334155] bg-[#111111] p-4">
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-[minmax(240px,1.4fr)_repeat(3,minmax(150px,0.7fr))]">
           <label className="relative">
             <Search size={15} className="pointer-events-none absolute left-3 top-3.5 text-[#64748B]" />
@@ -498,7 +498,7 @@ export default function CorporateSalesDashboardPage() {
         </div>
       </section>
 
-      <section className="overflow-hidden rounded-[18px] border border-[#334155] bg-[#111111] shadow-panel">
+      <section className="ds-card overflow-hidden rounded-xl border border-[#334155] bg-[#111111]">
         <div className="flex items-center justify-between gap-3 border-b border-[#334155] px-4 py-3">
           <div>
             <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-[#C8A96B]">Action Queue</p>
@@ -511,7 +511,7 @@ export default function CorporateSalesDashboardPage() {
         {followUpLeads.length > 0 ? (
           <div className="grid gap-2 p-3 md:grid-cols-2 xl:grid-cols-4">
             {followUpLeads.map((lead) => (
-              <article key={String(lead.id || lead.companyName)} className="rounded-[12px] border border-[#334155] bg-[#0F172A] p-3">
+              <article key={String(lead.id || lead.companyName)} className="rounded-xl border border-[#334155] bg-[#0F172A] p-3">
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
                     <p className="truncate text-xs font-semibold text-white">{lead.companyName}</p>
@@ -549,7 +549,7 @@ export default function CorporateSalesDashboardPage() {
 
         <div className="grid items-start gap-3 md:grid-cols-2 xl:grid-cols-4">
           {groupedLeads.map((group) => (
-            <section key={group.stage} className="min-w-0 overflow-hidden rounded-[16px] border border-[#334155] bg-[#0F172A]">
+            <section key={group.stage} className="min-w-0 overflow-hidden rounded-xl border border-[#334155] bg-[#0F172A]">
               <div className="flex items-center justify-between gap-3 border-b border-[#334155] px-3 py-2.5">
                 <div className="flex min-w-0 items-center gap-2">
                   <CircleDot size={13} className={group.stage === 'Lost' ? 'text-rose-300' : group.stage === 'Won' ? 'text-emerald-300' : 'text-[#C8A96B]'} />

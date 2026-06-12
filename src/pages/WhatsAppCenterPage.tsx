@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { ChevronDown, ChevronUp, Search } from 'lucide-react';
 import Toast from '../components/Toast';
 import type { Customer, DeliveryTask, KitchenTask, Order } from '../data/mockData';
 import { loadInvoicesFromSupabase } from '../services/invoiceService';
@@ -30,6 +31,7 @@ type FollowUpItem = {
   orderNo: string;
   status: string;
   amount: number;
+  date: string;
   template: TemplateKey;
   message: string;
 };
@@ -100,11 +102,18 @@ const statusTone = (status: string) => {
   return 'border-white/10 bg-white/5 text-slate-300';
 };
 
+const COMPLETED_PAGE_SIZE = 12;
+
 export default function WhatsAppCenterPage({ orders, customers, deliveryTasks, kitchenTasks = [] }: WhatsAppCenterPageProps) {
   const [invoices, setInvoices] = useState<InvoiceRecord[]>([]);
   const [selectedTemplate, setSelectedTemplate] = useState<TemplateKey>('Order Confirmation');
   const [selectedRecord, setSelectedRecord] = useState('order:' + (orders[0]?.id || ''));
   const [templates, setTemplates] = useState<Record<TemplateKey, string>>(defaultTemplates);
+  const [completedOpen, setCompletedOpen] = useState(false);
+  const [completedFullList, setCompletedFullList] = useState(false);
+  const [completedSearch, setCompletedSearch] = useState('');
+  const [completedDate, setCompletedDate] = useState('');
+  const [completedPage, setCompletedPage] = useState(1);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
 
   useEffect(() => {
@@ -184,6 +193,7 @@ export default function WhatsAppCenterPage({ orders, customers, deliveryTasks, k
       orderNo: order.orderNo || order.id || '-',
       status,
       amount: toSafeNumber(order.totalAmount),
+      date: order.deliveryDate || order.statusHistory?.slice(-1)[0]?.timestamp?.slice(0, 10) || '',
       template,
       message: renderMessage(templates[template], order, customers.find((customer) => customer.phone === order.phone) || null)
     });
@@ -198,6 +208,7 @@ export default function WhatsAppCenterPage({ orders, customers, deliveryTasks, k
         orderNo: '-',
         status: 'Inactive 30+ days',
         amount: toSafeNumber(customer.totalSpend),
+        date: customer.lastOrderDate || customer.firstOrderDate || '',
         template: 'Winback Message',
         message: renderMessage(templates['Winback Message'], null, customer)
       }));
@@ -215,9 +226,32 @@ export default function WhatsAppCenterPage({ orders, customers, deliveryTasks, k
     ['Pending Payment Orders', followUps.filter((item) => item.group === 'Pending Payment Orders')],
     ['Ready for Delivery Orders', followUps.filter((item) => item.group === 'Ready for Delivery Orders')],
     ['Out for Delivery Orders', followUps.filter((item) => item.group === 'Out for Delivery Orders')],
-    ['Completed Orders', followUps.filter((item) => item.group === 'Completed Orders')],
     ['Inactive Customers', followUps.filter((item) => item.group === 'Inactive Customers')]
   ];
+
+  const completedOrders = useMemo(() => (
+    followUps
+      .filter((item) => item.group === 'Completed Orders')
+      .sort((first, second) => second.date.localeCompare(first.date))
+  ), [followUps]);
+
+  const filteredCompletedOrders = useMemo(() => {
+    const query = completedSearch.trim().toLowerCase();
+    return completedOrders.filter((item) => {
+      const matchesSearch = !query || [item.customerName, item.phone, item.orderNo].join(' ').toLowerCase().includes(query);
+      const matchesDate = !completedDate || item.date === completedDate;
+      return matchesSearch && matchesDate;
+    });
+  }, [completedDate, completedOrders, completedSearch]);
+
+  const completedPageCount = Math.max(Math.ceil(filteredCompletedOrders.length / COMPLETED_PAGE_SIZE), 1);
+  const completedPreviewItems = completedFullList
+    ? filteredCompletedOrders.slice((completedPage - 1) * COMPLETED_PAGE_SIZE, completedPage * COMPLETED_PAGE_SIZE)
+    : completedOrders.slice(0, 6);
+
+  useEffect(() => {
+    setCompletedPage(1);
+  }, [completedDate, completedSearch]);
 
   const selectedLabel = selectedOrder
     ? `${selectedOrder.orderNo || selectedOrder.id} - ${selectedOrder.customerName}`
@@ -303,7 +337,7 @@ export default function WhatsAppCenterPage({ orders, customers, deliveryTasks, k
           <h4 className="mt-2 text-xl font-semibold text-white">Suggested WhatsApp actions</h4>
         </div>
 
-        {groupedFollowUps.map(([title, items]) => (
+        {groupedFollowUps.slice(0, 3).map(([title, items]) => (
           <div key={title} className="rounded-[32px] border border-white/10 bg-[#141414] p-5 shadow-panel">
             <div className="mb-4 flex items-center justify-between gap-3">
               <h5 className="font-semibold text-white">{title}</h5>
@@ -312,29 +346,116 @@ export default function WhatsAppCenterPage({ orders, customers, deliveryTasks, k
 
             <div className="grid gap-4 lg:grid-cols-2 2xl:grid-cols-3">
               {items.length === 0 && <p className="rounded-[24px] border border-white/10 bg-[#0f0f0f] p-5 text-sm text-slate-400">No follow-ups in this category.</p>}
-              {items.map((item) => {
-                const phone = normalizeMalaysiaPhone(item.phone);
-                return (
-                  <article key={item.id} className="rounded-[24px] border border-white/10 bg-[#0f0f0f] p-4 text-sm text-slate-300 transition hover:border-gold/30">
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <p className="font-semibold text-white">{item.customerName}</p>
-                        <p className="mt-1 text-slate-400">{item.phone || 'No phone'}</p>
-                      </div>
-                      <span className={`rounded-full border px-3 py-1 text-xs ${statusTone(item.status)}`}>{item.status}</span>
-                    </div>
-                    <div className="mt-4 grid grid-cols-2 gap-3">
-                      <Info label="Order No" value={item.orderNo} />
-                      <Info label="Template" value={item.template} />
-                    </div>
-                    <p className="mt-4 rounded-2xl bg-white/5 p-3 text-sm leading-6 text-slate-300">{item.message}</p>
-                    <div className="mt-4 flex flex-wrap gap-2">
-                      <button onClick={() => copyMessage(item.message)} className="rounded-2xl bg-white/5 px-3 py-2 text-xs font-semibold text-slate-200 transition hover:bg-white/10">Copy Message</button>
-                      <button onClick={() => openWhatsApp(item.phone, item.message)} disabled={!phone} className="rounded-2xl bg-emerald-500/10 px-3 py-2 text-xs font-semibold text-emerald-200 transition hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-50">Open WhatsApp</button>
-                    </div>
-                  </article>
-                );
-              })}
+              {items.map((item) => <FollowUpCard key={item.id} item={item} onCopy={copyMessage} onOpenWhatsApp={openWhatsApp} />)}
+            </div>
+          </div>
+        ))}
+
+        <div className="overflow-hidden rounded-[24px] border border-[#334155] bg-[#111111] shadow-panel">
+          <button
+            type="button"
+            onClick={() => setCompletedOpen((current) => !current)}
+            className="flex w-full items-center justify-between gap-4 px-5 py-4 text-left transition hover:bg-white/[0.03]"
+            aria-expanded={completedOpen}
+          >
+            <div className="flex min-w-0 items-center gap-4">
+              <div>
+                <h5 className="font-semibold text-white">Completed Orders</h5>
+                <p className="mt-1 text-xs text-slate-400">
+                  {completedOrders.length} orders <span className="mx-2 text-[#334155]">|</span> View
+                </p>
+              </div>
+            </div>
+            <div className="flex shrink-0 items-center gap-3">
+              <span className="rounded-full border border-[#10B981]/25 bg-[#10B981]/10 px-3 py-1 text-xs font-semibold text-[#6EE7B7]">{completedOrders.length}</span>
+              {completedOpen ? <ChevronUp size={18} className="text-[#C8A96B]" /> : <ChevronDown size={18} className="text-[#C8A96B]" />}
+            </div>
+          </button>
+
+          {completedOpen && (
+            <div className="border-t border-[#334155] p-4">
+              {completedFullList && (
+                <div className="mb-4 grid gap-3 md:grid-cols-[1fr_220px_auto]">
+                  <label className="relative">
+                    <Search size={15} className="absolute left-3 top-3.5 text-slate-500" />
+                    <input
+                      value={completedSearch}
+                      onChange={(event) => setCompletedSearch(event.target.value)}
+                      placeholder="Search customer, phone, order no"
+                      className="h-11 w-full rounded-xl border border-[#334155] bg-[#0F172A] pl-10 pr-3 text-sm text-white outline-none placeholder:text-slate-600 focus:border-[#C8A96B]/50"
+                    />
+                  </label>
+                  <input
+                    type="date"
+                    value={completedDate}
+                    onChange={(event) => setCompletedDate(event.target.value)}
+                    className="h-11 rounded-xl border border-[#334155] bg-[#0F172A] px-3 text-sm text-white outline-none focus:border-[#C8A96B]/50"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCompletedSearch('');
+                      setCompletedDate('');
+                    }}
+                    className="rounded-xl border border-[#334155] px-4 py-2 text-xs font-semibold text-slate-300 transition hover:border-[#C8A96B]/40"
+                  >
+                    Clear
+                  </button>
+                </div>
+              )}
+
+              <div className="grid gap-4 lg:grid-cols-2 2xl:grid-cols-3">
+                {completedPreviewItems.map((item) => (
+                  <FollowUpCard key={item.id} item={item} onCopy={copyMessage} onOpenWhatsApp={openWhatsApp} />
+                ))}
+                {completedPreviewItems.length === 0 && (
+                  <p className="rounded-[20px] border border-[#334155] bg-[#0F172A] p-5 text-sm text-slate-400">
+                    No completed orders match these filters.
+                  </p>
+                )}
+              </div>
+
+              {!completedFullList && completedOrders.length > 6 && (
+                <button
+                  type="button"
+                  onClick={() => setCompletedFullList(true)}
+                  className="mt-4 w-full rounded-xl border border-[#C8A96B]/30 bg-[#C8A96B]/10 px-4 py-3 text-sm font-semibold text-[#C8A96B] transition hover:bg-[#C8A96B]/15"
+                >
+                  View More Completed Orders
+                </button>
+              )}
+
+              {completedFullList && (
+                <div className="mt-4 flex flex-col gap-3 border-t border-[#334155] pt-4 sm:flex-row sm:items-center sm:justify-between">
+                  <p className="text-xs text-slate-500">
+                    Page {completedPage} of {completedPageCount} · {filteredCompletedOrders.length} completed orders
+                  </p>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setCompletedFullList(false)}
+                      className="rounded-lg border border-[#334155] px-3 py-2 text-xs font-semibold text-slate-300"
+                    >
+                      Show Latest 6
+                    </button>
+                    <button type="button" onClick={() => setCompletedPage((page) => Math.max(page - 1, 1))} disabled={completedPage === 1} className="rounded-lg border border-[#334155] px-3 py-2 text-xs font-semibold text-slate-300 disabled:opacity-40">Previous</button>
+                    <button type="button" onClick={() => setCompletedPage((page) => Math.min(page + 1, completedPageCount))} disabled={completedPage >= completedPageCount} className="rounded-lg border border-[#334155] px-3 py-2 text-xs font-semibold text-slate-300 disabled:opacity-40">Next</button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {groupedFollowUps.slice(3).map(([title, items]) => (
+          <div key={title} className="rounded-[32px] border border-white/10 bg-[#141414] p-5 shadow-panel">
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <h5 className="font-semibold text-white">{title}</h5>
+              <span className="rounded-full bg-white/5 px-3 py-1 text-xs text-slate-300">{items.length}</span>
+            </div>
+            <div className="grid gap-4 lg:grid-cols-2 2xl:grid-cols-3">
+              {items.length === 0 && <p className="rounded-[24px] border border-white/10 bg-[#0f0f0f] p-5 text-sm text-slate-400">No follow-ups in this category.</p>}
+              {items.map((item) => <FollowUpCard key={item.id} item={item} onCopy={copyMessage} onOpenWhatsApp={openWhatsApp} />)}
             </div>
           </div>
         ))}
@@ -365,6 +486,39 @@ function Stat({ label, value }: { label: string; value: number }) {
       <p className="text-xs uppercase tracking-[0.18em] text-softGold">{label}</p>
       <p className="mt-1 text-lg font-semibold text-white">{value}</p>
     </div>
+  );
+}
+
+function FollowUpCard({
+  item,
+  onCopy,
+  onOpenWhatsApp
+}: {
+  item: FollowUpItem;
+  onCopy: (message: string) => void;
+  onOpenWhatsApp: (phone: string, message: string) => void;
+}) {
+  const phone = normalizeMalaysiaPhone(item.phone);
+
+  return (
+    <article className="rounded-[20px] border border-[#334155] bg-[#0F172A] p-4 text-sm text-slate-300 transition hover:border-[#C8A96B]/40">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="truncate font-semibold text-white">{item.customerName}</p>
+          <p className="mt-1 text-slate-400">{item.phone || 'No phone'}</p>
+        </div>
+        <span className={`shrink-0 rounded-full border px-3 py-1 text-xs ${statusTone(item.status)}`}>{item.status}</span>
+      </div>
+      <div className="mt-4 grid grid-cols-2 gap-3">
+        <Info label="Order No" value={item.orderNo} />
+        <Info label="Template" value={item.template} />
+      </div>
+      <p className="mt-4 rounded-2xl bg-white/5 p-3 text-sm leading-6 text-slate-300">{item.message}</p>
+      <div className="mt-4 flex flex-wrap gap-2">
+        <button onClick={() => onCopy(item.message)} className="rounded-2xl bg-white/5 px-3 py-2 text-xs font-semibold text-slate-200 transition hover:bg-white/10">Copy Message</button>
+        <button onClick={() => onOpenWhatsApp(item.phone, item.message)} disabled={!phone} className="rounded-2xl bg-[#10B981]/10 px-3 py-2 text-xs font-semibold text-[#6EE7B7] transition hover:bg-[#10B981]/20 disabled:cursor-not-allowed disabled:opacity-50">Open WhatsApp</button>
+      </div>
+    </article>
   );
 }
 

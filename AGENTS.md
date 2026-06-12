@@ -325,11 +325,13 @@ Lead Priority:
 
 Use this exact opening message:
 
-Hi, this is Paul from Layer By Layer Bakery 😊
+Hi, this is Selina from Layer By Layer Bakery ☺️
 
-May I know who is the right person to contact regarding office tea break, staff gathering, corporate gifting or event dessert arrangements?
+May I know who would be the best person to speak with regarding staff events, office tea breaks, corporate gifting or company celebrations?
 
-We prepare premium mini tarts for company events, meetings and celebrations.
+We specialise in premium handcrafted mini tarts that are commonly ordered for meetings, appreciation events, training sessions and company gatherings.
+
+Would appreciate if you could point me in the right direction. Thank you 😊
 
 ## WhatsApp Order Confirmation Standard
 

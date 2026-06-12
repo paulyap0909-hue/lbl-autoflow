@@ -17,6 +17,7 @@ import QuotationPage from './pages/QuotationPage';
 import FollowUpTasksPage from './pages/FollowUpTasksPage';
 import RecipeCalculatorPage from './pages/RecipeCalculatorPage';
 import ProductionCenterPage from './pages/ProductionCenterPage';
+import CorporateAccountsPage from './pages/CorporateAccountsPage';
 import LoginPage, { type CurrentUser, type UserRole } from './pages/LoginPage';
 import SettingsPage from './pages/SettingsPage';
 import {
@@ -53,6 +54,7 @@ const pageTitles: Record<string, string> = {
   'follow-up-tasks': 'Follow-up Tasks',
   'production-center': 'Production Center',
   'recipe-calculator': 'Recipe Calculator',
+  'corporate-accounts': 'Corporate Accounts',
   'whatsapp-crm': 'WhatsApp CRM',
   automation: 'Automation Center',
   templates: 'WhatsApp Templates',
@@ -61,7 +63,7 @@ const pageTitles: Record<string, string> = {
 
 const rolePermissions: Record<UserRole, string[]> = {
   admin: Object.keys(pageTitles),
-  sales: ['dashboard', 'orders', 'customers', 'invoices', 'events', 'sales-crm', 'sales-dashboard', 'quotations', 'follow-up-tasks', 'whatsapp-crm', 'delivery', 'kitchen', 'products', 'production-center', 'recipe-calculator']
+  sales: ['dashboard', 'orders', 'customers', 'invoices', 'events', 'sales-crm', 'sales-dashboard', 'corporate-accounts', 'quotations', 'follow-up-tasks', 'whatsapp-crm', 'delivery', 'kitchen', 'products', 'production-center', 'recipe-calculator']
 };
 
 const getStoredUser = (): CurrentUser | null => {
@@ -515,6 +517,8 @@ useEffect(() => {
         return <SalesCRMPage />;
       case 'sales-dashboard':
         return <CorporateSalesDashboardPage />;
+      case 'corporate-accounts':
+        return <CorporateAccountsPage orders={orders} />;
       case 'quotations':
         return <QuotationPage />;
       case 'follow-up-tasks':
@@ -541,17 +545,17 @@ useEffect(() => {
   }
 
   return (
-    <div className="min-h-screen bg-[#0F172A] text-cream">
+    <div className="min-h-screen bg-[#010102] text-cream">
       <div className="mx-auto flex min-h-screen max-w-[1600px] flex-col md:flex-row md:items-start">
         <Sidebar active={activePage} onSelect={setActivePage} currentUser={currentUser} allowedPages={allowedPages} onLogout={handleLogout} followUpBadge={followUpBadge} />
 
         <main className="min-w-0 flex-1 p-3 md:p-4 xl:p-5">
-          <div className="mb-3.5 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+          <div className="mb-4 flex flex-col gap-2 border-b border-[#23252a] pb-4 md:flex-row md:items-center md:justify-between">
             <div>
-              <p className="text-xs uppercase tracking-[0.24em] text-softGold">Welcome back</p>
-              <h2 className="mt-0.5 text-2xl font-semibold text-white">{hasPageAccess ? pageTitles[activePage] : 'Access Denied'}</h2>
+              <p className="text-xs font-medium uppercase text-[#5e6ad2]">Welcome back</p>
+              <h2 className="mt-1 text-2xl font-semibold text-[#f7f8f8]">{hasPageAccess ? pageTitles[activePage] : 'Access Denied'}</h2>
             </div>
-            <div className="rounded-xl border border-[#334155] bg-[#1E293B] px-3.5 py-2.5 text-xs text-[#94A3B8] shadow-panel">
+            <div className="rounded-lg border border-[#23252a] bg-[#0f1011] px-3.5 py-2.5 text-xs text-[#8a8f98]">
               Premium bakery operations interface
             </div>
           </div>

@@ -36,7 +36,7 @@ export type Order = {
     timestamp: string;
   }[];
   paymentStatus: 'Paid' | 'Pending' | 'Overdue';
-  kitchenStatus: 'New' | 'Preparing' | 'Ready';
+  kitchenStatus: 'New' | 'Preparing' | 'Ready' | 'Completed';
   deliveryStatus: 'Pending' | 'Assigned' | 'Out for Delivery' | 'Delivered';
   remark?: string;
 };
@@ -71,7 +71,7 @@ export type KitchenTask = {
   deliveryDate: string;
   deliveryTime: string;
   requiredReadyTime: string;
-  kitchenStatus: 'New' | 'Preparing' | 'Ready';
+  kitchenStatus: 'New' | 'Preparing' | 'Ready' | 'Completed';
 };
 
 export type DeliveryTask = {
@@ -82,6 +82,8 @@ export type DeliveryTask = {
   deliveryDate: string;
   deliveryTime: string;
   driverName: string;
+  driverPhone?: string;
+  driverType?: 'Internal Driver' | 'Grab' | 'Lalamove' | 'Self Collect';
   deliveryStatus: 'Pending' | 'Assigned' | 'Out for Delivery' | 'Delivered';
 };
 

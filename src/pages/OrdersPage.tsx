@@ -29,7 +29,7 @@ const badgeClass = (status: string) => {
   return 'bg-white/5 text-cream';
 };
 
-type QuickFilter = 'All' | 'Today' | 'Upcoming' | 'Completed';
+type PipelineFilter = 'All' | 'Pending Payment' | 'Confirmed' | 'In Kitchen' | 'Ready' | 'Delivery' | 'Completed';
 type OrderWithTimestamps = Order & {
   createdAt?: string;
   created_at?: string;
@@ -60,13 +60,6 @@ const getCreatedSortValue = (order: OrderWithTimestamps) => {
   return Number.isNaN(parsed) ? 0 : parsed;
 };
 
-const matchesQuickFilter = (order: Order, quickFilter: QuickFilter, today: string) => {
-  if (quickFilter === 'Today') return order.deliveryDate === today;
-  if (quickFilter === 'Upcoming') return Boolean(order.deliveryDate) && order.deliveryDate > today;
-  if (quickFilter === 'Completed') return isCompletedOrder(order);
-  return true;
-};
-
 const priorityBadgesForOrder = (order: Order, today: string) => {
   if (order.deliveryStatus === 'Delivered') return ['Completed'];
 
@@ -84,6 +77,22 @@ const priorityBadgeClass = (label: string) => {
   return 'border-sky-500/20 bg-sky-500/10 text-sky-200';
 };
 
+const pipelineFilters: PipelineFilter[] = ['All', 'Pending Payment', 'Confirmed', 'In Kitchen', 'Ready', 'Delivery', 'Completed'];
+
+const getPipelineStatus = (order: Order): PipelineFilter => {
+  if (isCompletedOrder(order) || order.workflowStatus === 'Completed') return 'Completed';
+  if (order.deliveryStatus === 'Assigned' || order.deliveryStatus === 'Out for Delivery' || order.workflowStatus === 'Out For Delivery') return 'Delivery';
+  if (order.kitchenStatus === 'Ready' || order.workflowStatus === 'Ready') return 'Ready';
+  if (order.kitchenStatus === 'Preparing' || order.workflowStatus === 'Preparing') return 'In Kitchen';
+  if (order.paymentStatus === 'Paid' || order.workflowStatus === 'Paid') return 'Confirmed';
+  return 'Pending Payment';
+};
+
+const matchesPipelineFilter = (order: Order, filter: PipelineFilter) =>
+  filter === 'All' || getPipelineStatus(order) === filter;
+
+const getOrderNo = (order: Order) => order.orderNo || order.id;
+
 export default function OrdersPage({ orders, products, orderSource, orderError = '', onAddOrder, onUpdateOrder, onMarkOrderPaid, onDeleteOrder }: OrdersPageProps) {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
@@ -94,9 +103,9 @@ export default function OrdersPage({ orders, products, orderSource, orderError =
   const [invoiceLoadingOrderId, setInvoiceLoadingOrderId] = useState('');
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
-  const [statusFilter, setStatusFilter] = useState('All');
   const [productFilter, setProductFilter] = useState('All');
-  const [quickFilter, setQuickFilter] = useState<QuickFilter>('All');
+  const [pipelineFilter, setPipelineFilter] = useState<PipelineFilter>('All');
+  const [completedOpen, setCompletedOpen] = useState(false);
 
   const workflowStages = ['New Order', 'Pending Payment', 'Paid', 'Preparing', 'Ready', 'Out For Delivery', 'Completed', 'Cancelled'] as const;
 
@@ -150,22 +159,39 @@ export default function OrdersPage({ orders, products, orderSource, orderError =
       const matchesSearch = [order.id, order.orderNo, order.customerName, order.phone, order.product, order.address]
         .join(' ').toLowerCase()
         .includes(searchTerm.toLowerCase());
-      const matchesStatus = statusFilter === 'All' || order.workflowStatus === statusFilter || order.paymentStatus === statusFilter || order.deliveryStatus === statusFilter || order.kitchenStatus === statusFilter;
       const matchesProduct = productFilter === 'All' || order.product === productFilter;
-      return matchesSearch && matchesStatus && matchesProduct;
+      const matchesPipeline = matchesPipelineFilter(order, pipelineFilter);
+      return matchesSearch && matchesProduct && matchesPipeline;
     });
-  }, [orders, searchTerm, statusFilter, productFilter]);
+  }, [orders, searchTerm, productFilter, pipelineFilter]);
 
-  const quickFilterCounts = useMemo(() => ({
-    All: baseFilteredOrders.length,
-    Today: baseFilteredOrders.filter((order) => matchesQuickFilter(order, 'Today', todayDate)).length,
-    Upcoming: baseFilteredOrders.filter((order) => matchesQuickFilter(order, 'Upcoming', todayDate)).length,
-    Completed: baseFilteredOrders.filter((order) => matchesQuickFilter(order, 'Completed', todayDate)).length,
-  }), [baseFilteredOrders, todayDate]);
+  const pipelineCounts = useMemo(() => {
+    const searchAndProductFiltered = orders.filter((order) => {
+      const matchesSearch = [order.id, order.orderNo, order.customerName, order.phone, order.product, order.address]
+        .join(' ').toLowerCase()
+        .includes(searchTerm.toLowerCase());
+      const matchesProduct = productFilter === 'All' || order.product === productFilter;
+      return matchesSearch && matchesProduct;
+    });
+
+    return pipelineFilters.reduce<Record<PipelineFilter, number>>((counts, filter) => {
+      counts[filter] = filter === 'All'
+        ? searchAndProductFiltered.length
+        : searchAndProductFiltered.filter((order) => getPipelineStatus(order) === filter).length;
+      return counts;
+    }, {
+      All: 0,
+      'Pending Payment': 0,
+      Confirmed: 0,
+      'In Kitchen': 0,
+      Ready: 0,
+      Delivery: 0,
+      Completed: 0
+    });
+  }, [orders, searchTerm, productFilter]);
 
   const filteredOrders = useMemo(() => {
     return baseFilteredOrders
-      .filter((order) => matchesQuickFilter(order, quickFilter, todayDate))
       .sort((first, second) => {
         const firstDelivery = getDeliverySortValue(first);
         const secondDelivery = getDeliverySortValue(second);
@@ -177,30 +203,37 @@ export default function OrdersPage({ orders, products, orderSource, orderError =
         }
         return getCreatedSortValue(second as OrderWithTimestamps) - getCreatedSortValue(first as OrderWithTimestamps);
       });
-  }, [baseFilteredOrders, quickFilter, todayDate]);
+  }, [baseFilteredOrders]);
 
   const orderStats = useMemo(() => {
-  const totalOrders = orders.length;
-  const totalSales = orders.reduce((sum, order) => sum + (Number(order.totalAmount) || 0), 0);
-  const pendingPayment = orders.filter((order) => order.paymentStatus !== 'Paid').length;
-  const kitchenPending = orders.filter((order) => order.kitchenStatus !== 'Ready').length;
-  const deliveryPending = orders.filter((order) => order.deliveryStatus !== 'Delivered').length;
-  const completedOrders = orders.filter(
-    (order) =>
-      order.paymentStatus === 'Paid' &&
-      order.kitchenStatus === 'Ready' &&
-      order.deliveryStatus === 'Delivered'
-  ).length;
+    const totalSales = orders.reduce((sum, order) => sum + (Number(order.totalAmount) || 0), 0);
+    const pendingPayment = orders.filter((order) => order.paymentStatus !== 'Paid').length;
+    const inKitchen = orders.filter((order) => order.kitchenStatus === 'Preparing' || order.workflowStatus === 'Preparing').length;
+    const ready = orders.filter((order) => order.kitchenStatus === 'Ready' && order.deliveryStatus !== 'Delivered').length;
+    const deliveryPending = orders.filter((order) => order.deliveryStatus !== 'Delivered').length;
+    const completedOrders = orders.filter(isCompletedOrder).length;
+    const todayOrders = orders.filter((order) => order.deliveryDate === todayDate || getCreatedSortValue(order as OrderWithTimestamps) >= new Date(`${todayDate}T00:00:00`).getTime()).length;
 
-  return {
-    totalOrders,
-    totalSales,
-    pendingPayment,
-    kitchenPending,
-    deliveryPending,
-    completedOrders,
-  };
-}, [orders]);
+    return {
+      totalSales,
+      pendingPayment,
+      inKitchen,
+      ready,
+      deliveryPending,
+      completedOrders,
+      todayOrders,
+    };
+  }, [orders, todayDate]);
+
+  const activeDisplayOrders = useMemo(
+    () => filteredOrders.filter((order) => !isCompletedOrder(order) && order.workflowStatus !== 'Completed'),
+    [filteredOrders]
+  );
+
+  const completedDisplayOrders = useMemo(
+    () => filteredOrders.filter((order) => isCompletedOrder(order) || order.workflowStatus === 'Completed'),
+    [filteredOrders]
+  );
 
   const handleMarkPaid = async (orderId: string) => {
     const order = orders.find((item) => item.id === orderId);
@@ -393,6 +426,89 @@ export default function OrdersPage({ orders, products, orderSource, orderError =
     return address;
   };
 
+  const getShortAddress = (order: Order) => {
+    const address = formatDeliveryAddress(order);
+    return address.length > 76 ? `${address.slice(0, 76)}...` : address;
+  };
+
+  const getProductSummary = (order: Order) => {
+    const flavours = Array.isArray(order.flavours) ? order.flavours.filter(Boolean) : [];
+    if (!flavours.length) return `${order.product} x ${order.quantity || 1}`;
+    const visibleFlavours = flavours.slice(0, 2).join(', ');
+    const extraCount = flavours.length > 2 ? ` +${flavours.length - 2}` : '';
+    return `${order.product} x ${order.quantity || 1} - ${visibleFlavours}${extraCount}`;
+  };
+
+  const renderOrderCard = (order: Order, compact = false) => {
+    const invoice = getInvoiceForOrderCard(order);
+    const invoiceGenerated = Boolean(invoice);
+    const invoiceBusy = invoiceLoadingOrderId === order.id;
+    const pipelineStatus = getPipelineStatus(order);
+
+    return (
+      <article
+        key={order.id}
+        className="flex min-h-full flex-col rounded-[22px] border border-[#334155] bg-[#111111] p-4 text-sm text-slate-300 shadow-panel transition hover:border-[#C8A96B]/40 hover:bg-[#141414]"
+      >
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="truncate text-base font-semibold text-white">{getOrderNo(order)}</p>
+            <p className="mt-1 truncate text-xs text-slate-500">{order.customerName || 'Customer'} - {order.phone || 'No phone'}</p>
+          </div>
+          <span className={`shrink-0 rounded-full px-3 py-1 text-[11px] font-semibold ${workflowBadgeClass(order.workflowStatus)}`}>
+            {pipelineStatus}
+          </span>
+        </div>
+
+        <div className="mt-4 grid gap-3 sm:grid-cols-[1fr_auto]">
+          <div className="min-w-0">
+            <p className="text-xs uppercase tracking-[0.16em] text-slate-500">Order Value</p>
+            <p className="mt-1 text-xl font-semibold text-[#C8A96B]">{formatRM(order.totalAmount)}</p>
+          </div>
+          <div className="flex flex-wrap gap-1.5 sm:justify-end">
+            <span className={`inline-flex rounded-full px-2.5 py-1 text-[11px] font-semibold ${badgeClass(order.paymentStatus)}`}>{order.paymentStatus}</span>
+            <span className={`inline-flex rounded-full px-2.5 py-1 text-[11px] font-semibold ${badgeClass(order.kitchenStatus)}`}>{order.kitchenStatus}</span>
+            <span className={`inline-flex rounded-full px-2.5 py-1 text-[11px] font-semibold ${badgeClass(order.deliveryStatus)}`}>{order.deliveryStatus}</span>
+          </div>
+        </div>
+
+        <div className="mt-4 rounded-[16px] border border-[#334155] bg-[#0F172A] p-3">
+          <p className="truncate font-semibold text-white">{getProductSummary(order)}</p>
+          <p className="mt-2 text-xs text-slate-400">{order.deliveryDate || 'No date'} / {order.deliveryTime || 'No time'}</p>
+          <p className="mt-2 truncate text-xs text-slate-500">{getShortAddress(order)}</p>
+        </div>
+
+        {!compact && (
+          <div className="mt-3 flex flex-wrap gap-1.5">
+            {priorityBadgesForOrder(order, todayDate).map((badge) => (
+              <span key={badge} className={`inline-flex rounded-full border px-2.5 py-1 text-[11px] font-semibold ${priorityBadgeClass(badge)}`}>
+                {badge}
+              </span>
+            ))}
+            {invoiceGenerated && <span className="inline-flex rounded-full border border-[#C8A96B]/25 bg-[#C8A96B]/10 px-2.5 py-1 text-[11px] font-semibold text-[#C8A96B]">Invoice Generated</span>}
+          </div>
+        )}
+
+        <div className="mt-auto grid grid-cols-2 gap-2 border-t border-[#334155] pt-4 sm:grid-cols-4">
+          {!invoiceGenerated ? (
+            <button onClick={() => handleGenerateInvoice(order)} disabled={invoiceBusy} className="rounded-xl bg-[#C8A96B]/15 px-3 py-2 text-xs font-semibold text-[#E4C98E] transition hover:bg-[#C8A96B]/25 disabled:opacity-50">
+              {invoiceBusy ? 'Generating' : 'Invoice'}
+            </button>
+          ) : (
+            <button onClick={() => setPreviewInvoiceOrderId(order.id)} className="rounded-xl bg-[#C8A96B]/15 px-3 py-2 text-xs font-semibold text-[#E4C98E] transition hover:bg-[#C8A96B]/25">Invoice</button>
+          )}
+          <button onClick={() => setSelectedOrderId(order.id)} className="rounded-xl bg-white/5 px-3 py-2 text-xs font-semibold text-slate-200 transition hover:bg-white/10">Workflow</button>
+          <button onClick={() => handleSendInvoiceWhatsApp(order, invoice)} className="rounded-xl bg-emerald-500/10 px-3 py-2 text-xs font-semibold text-emerald-200 transition hover:bg-emerald-500/20">WhatsApp</button>
+          <button onClick={() => setEditingOrderId(order.id)} className="rounded-xl bg-white/5 px-3 py-2 text-xs font-semibold text-slate-200 transition hover:bg-white/10">Edit</button>
+          <button onClick={() => handleMarkPaid(order.id)} className="rounded-xl bg-emerald-500/10 px-3 py-2 text-xs font-semibold text-emerald-200 transition hover:bg-emerald-500/20">Mark Paid</button>
+          <button onClick={() => handleSendKitchen(order.id)} className="rounded-xl bg-sky-500/10 px-3 py-2 text-xs font-semibold text-sky-200 transition hover:bg-sky-500/20">Send Kitchen</button>
+          <button onClick={() => handleAssignDriver(order.id)} className="rounded-xl bg-indigo-500/10 px-3 py-2 text-xs font-semibold text-indigo-200 transition hover:bg-indigo-500/20">Assign Driver</button>
+          <button onClick={() => handleDeleteOrder(order)} className="rounded-xl bg-rose-500/10 px-3 py-2 text-xs font-semibold text-rose-200 transition hover:bg-rose-500/20">Delete</button>
+        </div>
+      </article>
+    );
+  };
+
   const buildOrderWhatsAppMessage = (order: Order) => {
     const orderNo = order.orderNo || order.id;
     return `Hi ${order.customerName}, thank you for your order with Layer By Layer Bakery 😊
@@ -430,86 +546,83 @@ Thank you 😊`;
     window.open(`https://wa.me/${phone}?text=${encodeURIComponent(message)}`, '_blank', 'noopener,noreferrer');
   };
 
-  const totalSales = useMemo(() => orders.reduce((sum, order) => sum + order.totalAmount, 0), [orders]);
-
   return (
-    <div className="space-y-8">
+    <div className="space-y-4">
       {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
 
-      <div className="flex flex-col gap-4 rounded-[32px] border border-white/10 bg-[#141414] p-6 shadow-panel md:flex-row md:items-center md:justify-between">
-        <div>
-          <h3 className="text-2xl font-semibold text-white">Orders Management</h3>
-          <p className="mt-2 text-sm text-slate-400">View, update and manage every order inside the bakery system.</p>
+      <section className="rounded-[20px] border border-[#334155] bg-[#111111] p-4 shadow-panel md:p-5">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <p className="text-xs uppercase tracking-[0.24em] text-[#C8A96B]">Daily Operations</p>
+            <h3 className="mt-1.5 text-2xl font-semibold text-white">Orders Command Center</h3>
+            <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-400">Manage daily bakery orders, payment, kitchen and delivery flow.</p>
+          </div>
+          <div className="flex flex-wrap items-center gap-3">
+            <button onClick={() => setIsModalOpen(true)} className="rounded-xl bg-[#C8A96B] px-4 py-2.5 text-sm font-semibold text-[#111111] transition hover:bg-[#d6b77d]">
+              Add New Order
+            </button>
+            <span className="rounded-xl border border-[#C8A96B]/30 bg-[#C8A96B]/10 px-3.5 py-2.5 text-xs font-semibold text-[#E4C98E]">Source: {orderSource}</span>
+          </div>
         </div>
-        <div className="flex flex-wrap gap-3">
-          <button onClick={() => setIsModalOpen(true)} className="rounded-3xl bg-gold px-5 py-3 text-sm font-semibold text-charcoal transition hover:bg-[#b9985f]">
-            Add New Order
-          </button>
-          <div className="rounded-3xl bg-white/5 px-5 py-3 text-sm text-slate-300">Total Sales {formatRM(totalSales)}</div>
-          <div className="rounded-3xl border border-gold/20 bg-gold/10 px-5 py-3 text-sm text-softGold">Source: {orderSource}</div>
-        </div>
-      </div>
+      </section>
 
       {orderError && (
-        <section className="rounded-[28px] border border-rose-500/20 bg-rose-500/10 p-5 shadow-panel">
+        <section className="rounded-[18px] border border-rose-500/20 bg-rose-500/10 p-4 shadow-panel">
           <p className="text-xs uppercase tracking-[0.28em] text-rose-200">Supabase orders error</p>
           <p className="mt-3 text-sm leading-6 text-rose-100">{orderError}</p>
         </section>
       )}
 
-      <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-6">
+      <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
         {[
-          ['Total Orders', orderStats.totalOrders],
-          ['Total Sales', formatRM(orderStats.totalSales)],
-          ['Pending Payment', orderStats.pendingPayment],
-          ['Kitchen Pending', orderStats.kitchenPending],
-          ['Delivery Pending', orderStats.deliveryPending],
-          ['Completed Orders', orderStats.completedOrders],
-        ].map(([label, value]) => (
-          <div key={label} className="rounded-[24px] border border-white/10 bg-[#141414] p-5 transition hover:border-gold/30 hover:shadow-lg">
-            <p className="text-xs uppercase tracking-[0.22em] text-softGold">{label}</p>
-            <p className="mt-3 text-2xl font-semibold text-white">{value}</p>
+          ['Pending Payment', orderStats.pendingPayment, 'Collect receipts and confirm payment.'],
+          ['Kitchen Pending', orders.filter((order) => order.kitchenStatus !== 'Ready' && !isCompletedOrder(order)).length, 'Send paid orders into production.'],
+          ['Ready / Delivery', orderStats.ready, 'Handover, assign or deliver ready orders.'],
+          ['Today Orders', orderStats.todayOrders, 'Focus on orders due or created today.'],
+        ].map(([label, value, note]) => (
+          <div key={label} className="rounded-[16px] border border-[#334155] bg-[#111111] p-3.5 shadow-panel">
+            <div className="flex items-start justify-between gap-3">
+              <p className="text-xs uppercase tracking-[0.16em] text-slate-500">{label}</p>
+              <span className="rounded-full bg-[#C8A96B]/15 px-3 py-1 text-sm font-semibold text-[#E4C98E]">{value}</span>
+            </div>
+            <p className="mt-3 text-sm leading-5 text-slate-400">{note}</p>
           </div>
         ))}
       </section>
 
-      <section className="rounded-[24px] border border-white/10 bg-[#141414] p-4 shadow-panel">
-        <div className="grid gap-3 lg:grid-cols-[1.4fr_1fr_1fr]">
+      <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
+        {[
+          ['Pending Payment', orderStats.pendingPayment, 'text-amber-200'],
+          ['In Kitchen', orderStats.inKitchen, 'text-sky-200'],
+          ['Ready For Delivery / Collection', orderStats.ready, 'text-emerald-200'],
+          ['Delivery Pending', orderStats.deliveryPending, 'text-indigo-200'],
+          ['Completed Orders', orderStats.completedOrders, 'text-emerald-200'],
+          ['Total Sales', formatRM(orderStats.totalSales), 'text-[#E4C98E]'],
+        ].map(([label, value, valueClass]) => (
+          <div key={label} className="rounded-[16px] border border-[#334155] bg-[#111111] p-3.5 shadow-panel transition hover:border-[#C8A96B]/40">
+            <p className="text-[11px] uppercase tracking-[0.16em] text-slate-500">{label}</p>
+            <p className={`mt-3 text-2xl font-semibold ${valueClass}`}>{value}</p>
+          </div>
+        ))}
+      </section>
+
+      <section className="rounded-[18px] border border-[#334155] bg-[#111111] p-3.5 shadow-panel">
+        <div className="grid gap-3 lg:grid-cols-[1.5fr_0.7fr]">
           <div>
-            <label className="mb-2 block text-xs uppercase tracking-[0.2em] text-slate-500">Search Order</label>
+            <label className="mb-2 block text-xs uppercase tracking-[0.16em] text-slate-500">Search Orders</label>
             <input
               value={searchTerm}
               onChange={(event) => setSearchTerm(event.target.value)}
               placeholder="Customer, phone, product, order ID"
-              className="h-11 w-full rounded-2xl border border-white/10 bg-[#0f0f0f] px-4 text-sm text-white outline-none transition placeholder:text-slate-600 focus:border-gold/40"
+              className="h-11 w-full rounded-xl border border-[#334155] bg-[#0F172A] px-4 text-sm text-white outline-none transition placeholder:text-slate-600 focus:border-[#C8A96B]/50"
             />
           </div>
           <div>
-            <label className="mb-2 block text-xs uppercase tracking-[0.2em] text-slate-500">Status Filter</label>
-            <select
-              value={statusFilter}
-              onChange={(event) => setStatusFilter(event.target.value)}
-              className="h-11 w-full rounded-2xl border border-white/10 bg-[#0f0f0f] px-4 text-sm text-white outline-none transition focus:border-gold/40"
-            >
-              <option>All</option>
-              <option>Paid</option>
-              <option>Pending</option>
-              <option>Overdue</option>
-              <option>New Order</option>
-              <option>Pending Payment</option>
-              <option>Preparing</option>
-              <option>Ready</option>
-              <option>Out For Delivery</option>
-              <option>Completed</option>
-              <option>Cancelled</option>
-            </select>
-          </div>
-          <div>
-            <label className="mb-2 block text-xs uppercase tracking-[0.2em] text-slate-500">Product Filter</label>
+            <label className="mb-2 block text-xs uppercase tracking-[0.16em] text-slate-500">Product</label>
             <select
               value={productFilter}
               onChange={(event) => setProductFilter(event.target.value)}
-              className="h-11 w-full rounded-2xl border border-white/10 bg-[#0f0f0f] px-4 text-sm text-white outline-none transition focus:border-gold/40"
+              className="h-11 w-full rounded-xl border border-[#334155] bg-[#0F172A] px-4 text-sm text-white outline-none transition focus:border-[#C8A96B]/50"
             >
               <option>All</option>
               <option>Mini Tart</option>
@@ -519,122 +632,62 @@ Thank you 😊`;
         </div>
       </section>
 
-
-      <section className="flex flex-wrap gap-2">
-        {(['All', 'Today', 'Upcoming', 'Completed'] as QuickFilter[]).map((filter) => (
+      <section className="rounded-[18px] border border-[#334155] bg-[#111111] p-2.5 shadow-panel">
+        <div className="flex flex-wrap gap-2">
+        {pipelineFilters.map((filter) => (
           <button
             key={filter}
             type="button"
-            onClick={() => setQuickFilter(filter)}
-            className={`rounded-2xl border px-4 py-2 text-xs font-semibold transition ${
-              quickFilter === filter
-                ? 'border-gold/50 bg-gold text-charcoal'
-                : 'border-white/10 bg-[#141414] text-slate-300 hover:border-gold/30 hover:text-white'
+            onClick={() => {
+              setPipelineFilter(filter);
+              if (filter === 'Completed') setCompletedOpen(true);
+            }}
+            className={`rounded-xl border px-4 py-2 text-xs font-semibold transition ${
+              pipelineFilter === filter
+                ? 'border-[#C8A96B]/70 bg-[#C8A96B] text-[#111111]'
+                : 'border-[#334155] bg-[#0F172A] text-slate-300 hover:border-[#C8A96B]/40 hover:text-white'
             }`}
           >
-            {filter} <span className={quickFilter === filter ? 'text-charcoal/70' : 'text-softGold'}>{quickFilterCounts[filter]}</span>
+            {filter} <span className={pipelineFilter === filter ? 'text-[#111111]/70' : 'text-[#C8A96B]'}>{pipelineCounts[filter]}</span>
           </button>
         ))}
+        </div>
       </section>
 
-      <section className="grid grid-cols-1 gap-4 lg:grid-cols-2 2xl:grid-cols-3">
-        {filteredOrders.map((order) => (
-          (() => {
-            const invoice = getInvoiceForOrderCard(order);
-            const invoiceGenerated = Boolean(invoice);
-            const invoiceBusy = invoiceLoadingOrderId === order.id;
-            return (
-          <article
-            key={order.id}
-            className="flex min-h-full flex-col rounded-[24px] border border-white/10 bg-[#141414] p-5 text-sm text-slate-300 transition hover:border-gold/30 hover:shadow-lg"
-          >
-            <div className="flex items-start justify-between gap-4 border-b border-white/10 pb-4">
-              <div className="min-w-0">
-                <p className="truncate text-lg font-semibold text-white">{order.orderNo || order.id}</p>
+      <section className="grid grid-cols-1 gap-3 lg:grid-cols-2 2xl:grid-cols-3">
+        {activeDisplayOrders.map((order) => renderOrderCard(order))}
+
+        {activeDisplayOrders.length === 0 && (
+          <div className="rounded-[18px] border border-dashed border-[#334155] bg-[#111111] p-7 text-center text-sm text-slate-400 lg:col-span-2 2xl:col-span-3">
+            <p className="text-xs uppercase tracking-[0.2em] text-[#C8A96B]">No Active Orders</p>
+            <h4 className="mt-3 text-xl font-semibold text-white">No orders match this view.</h4>
+            <p className="mt-2">Adjust the search or pipeline filter to see more orders.</p>
+          </div>
+        )}
+      </section>
+
+      <section className="overflow-hidden rounded-[18px] border border-[#334155] bg-[#111111] shadow-panel">
+        <button
+          type="button"
+          onClick={() => setCompletedOpen((current) => !current)}
+          className="flex w-full items-center justify-between gap-4 px-4 py-3 text-left transition hover:bg-white/[0.03]"
+          aria-expanded={completedOpen}
+        >
+          <div>
+            <p className="font-semibold text-white">Completed Orders ({completedDisplayOrders.length})</p>
+            <p className="mt-1 text-xs text-slate-500">Completed orders are collapsed so active work stays clear.</p>
+          </div>
+          <span className="rounded-full border border-[#10B981]/30 bg-[#10B981]/10 px-3 py-1 text-xs font-semibold text-[#6EE7B7]">
+            {completedOpen ? 'Collapse' : 'Expand'}
+          </span>
+        </button>
+        {completedOpen && (
+          <div className="grid gap-3 border-t border-[#334155] p-3.5 lg:grid-cols-2 2xl:grid-cols-3">
+            {completedDisplayOrders.length > 0 ? completedDisplayOrders.map((order) => renderOrderCard(order, true)) : (
+              <div className="rounded-[18px] border border-dashed border-[#334155] bg-[#0F172A] p-8 text-center text-sm text-slate-500 lg:col-span-2 2xl:col-span-3">
+                No completed orders in this view.
               </div>
-              <div className="shrink-0 text-right">
-                <p className="text-xs uppercase tracking-[0.18em] text-softGold">Total</p>
-                <p className="mt-1 text-lg font-semibold text-white">{formatRM(order.totalAmount)}</p>
-              </div>
-            </div>
-
-            <div className="mt-4 flex flex-wrap gap-2">
-              {priorityBadgesForOrder(order, todayDate).map((badge) => (
-                <span key={badge} className={`inline-flex rounded-full border px-3 py-1 text-xs font-semibold ${priorityBadgeClass(badge)}`}>
-                  {badge}
-                </span>
-              ))}
-            </div>
-
-            <div className="space-y-4 py-4">
-              <div className="flex items-center justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="text-xs uppercase tracking-[0.18em] text-slate-500">Customer</p>
-                  <p className="mt-2 truncate font-semibold text-white">{order.customerName}</p>
-                </div>
-                <p className="shrink-0 text-sm text-slate-400">{order.phone}</p>
-              </div>
-
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="text-xs uppercase tracking-[0.18em] text-slate-500">Product</p>
-                  <p className="mt-2 truncate font-semibold text-white">{order.product}</p>
-                  <p className="mt-1 truncate text-slate-400">{order.flavours.join(', ')}</p>
-                </div>
-                <p className="shrink-0 rounded-full bg-gold/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.16em] text-softGold">Qty {order.quantity}</p>
-              </div>
-            </div>
-
-            <div className="rounded-[18px] border border-white/10 bg-[#0f0f0f] p-4">
-              <div className="flex items-center justify-between gap-3">
-                <p className="text-xs uppercase tracking-[0.18em] text-slate-500">Delivery</p>
-                <p className="text-xs font-semibold text-softGold">{order.deliveryDate || 'No date'} / {order.deliveryTime || 'No time'}</p>
-              </div>
-              <p className="mt-2 overflow-hidden text-ellipsis whitespace-nowrap text-slate-300">{order.address}</p>
-              <details className="mt-2">
-                <summary className="cursor-pointer list-none text-xs font-semibold text-softGold transition hover:text-gold">
-                  View Full Address
-                </summary>
-                <p className="mt-2 rounded-2xl bg-white/5 p-3 leading-6 text-slate-300">{order.address}</p>
-              </details>
-            </div>
-
-            <div className="mt-4 flex flex-wrap gap-2 pb-5">
-              <span className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${badgeClass(order.paymentStatus)}`}>{order.paymentStatus}</span>
-              <span className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${badgeClass(order.kitchenStatus)}`}>{order.kitchenStatus}</span>
-              <span className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${badgeClass(order.deliveryStatus)}`}>{order.deliveryStatus}</span>
-              {invoiceGenerated && <span className="inline-flex rounded-full bg-gold/10 px-3 py-1 text-xs font-semibold text-softGold">Invoice Generated</span>}
-            </div>
-
-            <div className="mt-auto grid grid-cols-2 gap-2 border-t border-white/10 pt-4 sm:grid-cols-3">
-              <button onClick={() => setInvoiceOrderId(order.id)} className="rounded-2xl bg-white/5 px-3 py-2 text-xs font-semibold text-slate-200 transition hover:bg-white/10">Invoice</button>
-              {!invoiceGenerated ? (
-                <button onClick={() => handleGenerateInvoice(order)} disabled={invoiceBusy} className="rounded-2xl bg-gold/10 px-3 py-2 text-xs font-semibold text-softGold transition hover:bg-gold/20 disabled:opacity-50">
-                  {invoiceBusy ? 'Generating...' : 'Generate Invoice'}
-                </button>
-              ) : (
-                <>
-                  <button onClick={() => setPreviewInvoiceOrderId(order.id)} className="rounded-2xl bg-gold/10 px-3 py-2 text-xs font-semibold text-softGold transition hover:bg-gold/20">Preview Invoice</button>
-                  <button onClick={() => handleDownloadInvoice(order)} className="rounded-2xl bg-white/5 px-3 py-2 text-xs font-semibold text-slate-200 transition hover:bg-white/10">Download PDF</button>
-                  <button onClick={() => handleGenerateInvoice(order, true)} disabled={invoiceBusy} className="rounded-2xl bg-white/5 px-3 py-2 text-xs font-semibold text-slate-200 transition hover:bg-white/10 disabled:opacity-50">Regenerate Invoice</button>
-                  <button onClick={() => handleSendInvoiceWhatsApp(order, invoice)} className="rounded-2xl bg-emerald-500/10 px-3 py-2 text-xs font-semibold text-emerald-200 transition hover:bg-emerald-500/20">Send WhatsApp</button>
-                </>
-              )}
-              <button onClick={() => setSelectedOrderId(order.id)} className="rounded-2xl bg-white/5 px-3 py-2 text-xs font-semibold text-slate-200 transition hover:bg-white/10">Workflow</button>
-              <button onClick={() => setEditingOrderId(order.id)} className="rounded-2xl bg-gold/10 px-3 py-2 text-xs font-semibold text-softGold transition hover:bg-gold/20">Edit</button>
-              <button onClick={() => handleMarkPaid(order.id)} className="rounded-2xl bg-emerald-500/10 px-3 py-2 text-xs font-semibold text-emerald-200 transition hover:bg-emerald-500/20">Mark Paid</button>
-              <button onClick={() => handleSendKitchen(order.id)} className="rounded-2xl bg-sky-500/10 px-3 py-2 text-xs font-semibold text-sky-200 transition hover:bg-sky-500/20">Send Kitchen</button>
-              <button onClick={() => handleAssignDriver(order.id)} className="rounded-2xl bg-indigo-500/10 px-3 py-2 text-xs font-semibold text-indigo-200 transition hover:bg-indigo-500/20">Assign Driver</button>
-              <button onClick={() => handleDeleteOrder(order)} className="rounded-2xl bg-rose-500/10 px-3 py-2 text-xs font-semibold text-rose-200 transition hover:bg-rose-500/20">Delete</button>
-            </div>
-          </article>
-            );
-          })()
-        ))}
-
-        {filteredOrders.length === 0 && (
-          <div className="rounded-[24px] border border-white/10 bg-[#141414] p-8 text-center text-sm text-slate-400 lg:col-span-2 2xl:col-span-3">
-            No orders match the current filters.
+            )}
           </div>
         )}
       </section>

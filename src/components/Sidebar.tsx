@@ -1,6 +1,7 @@
 import React from 'react';
 import {
   BarChart3,
+  Building2,
   Boxes,
   Calculator,
   CalendarDays,
@@ -50,6 +51,7 @@ const navItems: NavItem[] = [
   { id: 'whatsapp-crm', label: 'WhatsApp CRM', section: 'Customers', icon: MessageCircle },
   { id: 'follow-up-tasks', label: 'Follow-up Tasks', section: 'Customers', icon: ClipboardCheck },
   { id: 'sales-dashboard', label: 'Sales Pipeline', section: 'Customers', icon: BarChart3 },
+  { id: 'corporate-accounts', label: 'Corporate Accounts', section: 'Customers', icon: Building2 },
   { id: 'quotations', label: 'Quotations', section: 'Business', icon: FileText },
   { id: 'products', label: 'Products', section: 'Production', icon: PackageSearch },
   { id: 'production-center', label: 'Production Center', section: 'Production', icon: Factory },
@@ -73,21 +75,21 @@ export default function Sidebar({ active, onSelect, currentUser, allowedPages, o
   const visibleItems = navItems.filter((item) => allowedPages.includes(item.id));
 
   return (
-    <aside className="flex w-full flex-col border-b border-[#334155] bg-[#0F172A] p-3 text-sm text-[#F8FAFC] md:sticky md:top-0 md:h-screen md:w-[240px] md:shrink-0 md:border-b-0 md:border-r md:p-3.5">
+    <aside className="flex w-full flex-col border-b border-[#23252a] bg-[#010102] p-3 text-sm text-[#f7f8f8] md:sticky md:top-0 md:h-screen md:w-[240px] md:shrink-0 md:border-b-0 md:border-r md:p-3.5">
       <div className="flex shrink-0 items-center gap-2.5 px-2 py-1">
-        <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-[#C8A96B]/40 bg-[#C8A96B] text-sm font-semibold text-[#0F172A] shadow-[0_8px_24px_rgba(200,169,107,0.18)]">
+        <div className="flex h-10 w-10 items-center justify-center rounded-lg border border-[#5e6ad2] bg-[#5e6ad2] text-sm font-semibold text-white">
           LBL
         </div>
         <div>
-          <p className="text-[9px] font-semibold uppercase tracking-[0.2em] text-[#C8A96B]">AutoFlow</p>
-          <h1 className="mt-0.5 text-sm font-semibold text-[#F8FAFC]">Layer By Layer</h1>
+          <p className="text-[9px] font-semibold uppercase text-[#5e6ad2]">AutoFlow</p>
+          <h1 className="mt-0.5 text-sm font-semibold text-[#f7f8f8]">Layer By Layer</h1>
         </div>
       </div>
 
-      <div className="mt-3 shrink-0 rounded-[12px] border border-[#334155] bg-[#1E293B] p-2.5">
-        <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-[#C8A96B]">Signed in</p>
-        <p className="mt-1.5 truncate text-xs font-semibold text-[#F8FAFC]">{currentUser.email}</p>
-        <p className="mt-1 text-xs capitalize text-[#94A3B8]">{currentUser.role} workspace</p>
+      <div className="mt-3 shrink-0 rounded-xl border border-[#23252a] bg-[#0f1011] p-2.5">
+        <p className="text-[10px] font-semibold uppercase text-[#5e6ad2]">Signed in</p>
+        <p className="mt-1.5 truncate text-xs font-semibold text-[#f7f8f8]">{currentUser.email}</p>
+        <p className="mt-1 text-xs capitalize text-[#8a8f98]">{currentUser.role} workspace</p>
       </div>
 
       <nav className="mt-3 max-h-[320px] min-h-0 flex-1 space-y-2 overflow-y-auto pr-1 md:max-h-none">
@@ -98,9 +100,9 @@ export default function Sidebar({ active, onSelect, currentUser, allowedPages, o
           return (
             <div
               key={section}
-              className={sectionIndex === 0 ? '' : 'border-t border-[#334155]/55 pt-2'}
+              className={sectionIndex === 0 ? '' : 'border-t border-[#23252a] pt-2'}
             >
-              <p className="mb-1 px-2.5 text-[9px] font-semibold uppercase tracking-[0.16em] text-[#64748B]">{section}</p>
+              <p className="mb-1 px-2.5 text-[9px] font-semibold uppercase text-[#62666d]">{section}</p>
               <div className="space-y-0.5">
                 {sectionItems.map((item) => {
                   const Icon = item.icon;
@@ -111,8 +113,8 @@ export default function Sidebar({ active, onSelect, currentUser, allowedPages, o
                       onClick={() => onSelect(item.id)}
                       className={`flex h-[38px] w-full items-center gap-2.5 rounded-lg px-2.5 text-left transition ${
                         isActive
-                          ? 'bg-[#C8A96B] text-[#0F172A] shadow-[0_8px_24px_rgba(200,169,107,0.16)]'
-                          : 'text-[#CBD5E1] hover:bg-[#1E293B] hover:text-[#F8FAFC]'
+                          ? 'bg-[#5e6ad2] text-white'
+                          : 'text-[#d0d6e0] hover:bg-[#141516] hover:text-[#f7f8f8]'
                       }`}
                     >
                       <Icon size={16} strokeWidth={isActive ? 2.2 : 1.8} />
@@ -129,7 +131,7 @@ export default function Sidebar({ active, onSelect, currentUser, allowedPages, o
         })}
       </nav>
 
-      <div className="mt-3 shrink-0 border-t border-[#334155] pt-3">
+      <div className="mt-3 shrink-0 border-t border-[#23252a] pt-3">
         <button
           onClick={onLogout}
           className="flex h-10 w-full items-center justify-center gap-2 rounded-lg border border-[#EF4444]/30 bg-[#EF4444]/10 px-3 text-xs font-semibold text-[#FCA5A5] transition hover:bg-[#EF4444]/20"

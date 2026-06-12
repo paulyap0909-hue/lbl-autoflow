@@ -5,7 +5,7 @@ import { createAutomationLog } from './automationLogService';
 import { createOrUpdateCustomerForOrder } from './customerService';
 import { createDeliveryTaskForOrder, updateDeliveryTaskStatusForOrder } from './deliveryService';
 import { createInvoiceForOrder, updateInvoiceStatusForOrder } from './invoiceService';
-import { createKitchenTaskForOrder, updateKitchenTaskStatusForOrder } from './kitchenService';
+import { createKitchenTaskForOrder, syncKitchenStatusForOrder } from './kitchenService';
 
 type OrderRow = {
   id?: string | null;
@@ -95,7 +95,10 @@ const normalizeOrderStatus = (status: OrderRow['order_status']): Order['workflow
 };
 
 const normalizeKitchenStatus = (status: OrderRow['kitchen_status'], orderStatus: Order['workflowStatus']): Order['kitchenStatus'] => {
-  if (status === 'Preparing' || status === 'Ready' || status === 'Completed') return status;
+  const normalized = String(status ?? '').trim().toLowerCase();
+  if (normalized === 'preparing') return 'Preparing';
+  if (normalized === 'ready') return 'Ready';
+  if (normalized === 'completed' || normalized === 'complete') return 'Completed';
   if (orderStatus === 'Preparing') return 'Preparing';
   if (orderStatus === 'Ready') return 'Ready';
   return 'New';
@@ -234,8 +237,7 @@ export const orderToCreateRow = (order: Order) => ({
 });
 
 export const orderToUpdateRow = (order: Order) => ({
-  ...getOrderRowBase(order),
-  updated_at: new Date().toISOString()
+  ...getOrderRowBase(order)
 });
 
 export const orderToRow = orderToCreateRow;
@@ -255,6 +257,16 @@ async function safeSideEffect(label: string, action: () => Promise<unknown>) {
 
 export async function syncKitchenTaskFromOrder(updatedOrder: Order) {
   const orderNo = updatedOrder.orderNo || updatedOrder.id;
+  const syncResult = await syncKitchenStatusForOrder({
+    orderId: updatedOrder.supabaseId,
+    orderNo,
+    linkedOrderId: updatedOrder.id,
+    targetStatus: updatedOrder.kitchenStatus,
+    order: updatedOrder
+  });
+  const taskId = String((syncResult.kitchenTask as { id?: string | number } | null)?.id ?? '');
+  if (!taskId) return null;
+
   const payload = {
     order_id: updatedOrder.supabaseId || null,
     order_no: orderNo,
@@ -263,21 +275,13 @@ export async function syncKitchenTaskFromOrder(updatedOrder: Order) {
     flavour_quantities: updatedOrder.flavourQuantities || [],
     quantity: updatedOrder.quantity,
     delivery_date: updatedOrder.deliveryDate,
-    delivery_time: updatedOrder.deliveryTime,
-    status: updatedOrder.kitchenStatus
+    delivery_time: updatedOrder.deliveryTime
   };
-
-  const { data: existing, error: findError } = updatedOrder.supabaseId
-    ? await supabase.from('kitchen_tasks').select('id').or(`order_no.eq.${orderNo},order_id.eq.${updatedOrder.supabaseId}`).maybeSingle()
-    : await supabase.from('kitchen_tasks').select('id').eq('order_no', orderNo).maybeSingle();
-
-  if (findError) throw findError;
-  if (!existing?.id) return null;
 
   const { data, error } = await supabase
     .from('kitchen_tasks')
     .update(payload)
-    .eq('id', existing.id)
+    .eq('id', taskId)
     .select()
     .maybeSingle();
 
@@ -419,15 +423,13 @@ export async function markOrderPaid(orderId: string | number) {
   }
 
   const currentOrder = orderFromRow(existingOrder as OrderRow);
-  const updatedAt = new Date().toISOString();
   const workflowStatus = getPaidWorkflowStatus(currentOrder.workflowStatus);
 
   const { data, error } = await supabase
     .from(ORDERS_TABLE)
     .update({
       payment_status: 'Paid',
-      order_status: workflowStatus,
-      updated_at: updatedAt
+      order_status: workflowStatus
     })
     .eq('id', existingOrder.id)
     .select()

@@ -172,6 +172,8 @@ export default function InvoicePage({ onMarkOrderPaid }: InvoicePageProps) {
   const [activeTab, setActiveTab] = useState<InvoiceTab>('Need Action');
   const [activeLimit, setActiveLimit] = useState(ACTIVE_PAGE_SIZE);
   const [paidOpen, setPaidOpen] = useState(false);
+  const [archiveOpen, setArchiveOpen] = useState(false);
+  const [fullInvoiceOpen, setFullInvoiceOpen] = useState(false);
   const [archiveSearch, setArchiveSearch] = useState('');
   const [archiveDateFrom, setArchiveDateFrom] = useState('');
   const [archiveDateTo, setArchiveDateTo] = useState('');
@@ -246,6 +248,10 @@ export default function InvoicePage({ onMarkOrderPaid }: InvoicePageProps) {
     setArchivePage(1);
   }, [archiveDateFrom, archiveDateTo, archiveSearch, archiveStatus]);
 
+  useEffect(() => {
+    setFullInvoiceOpen(false);
+  }, [selectedInvoice?.id]);
+
   const needActionInvoices = activeInvoices.filter((invoice) => ['Pending', 'Overdue', 'Draft', 'Unsent'].includes(getStatus(invoice)));
   const currentList = activeTab === 'Archive'
     ? archiveInvoices
@@ -265,6 +271,30 @@ export default function InvoicePage({ onMarkOrderPaid }: InvoicePageProps) {
     paidToday: paidTodayInvoices.length
   }), [activeInvoices, needActionInvoices.length, paidTodayInvoices.length]);
 
+  const knownInvoices = useMemo(() => {
+    const invoiceMap = new Map<string, InvoiceRecord>();
+    [...activeInvoices, ...paidTodayInvoices, ...archiveInvoices].forEach((invoice) => {
+      invoiceMap.set(String(invoice.id ?? getInvoiceNo(invoice)), invoice);
+    });
+    return Array.from(invoiceMap.values());
+  }, [activeInvoices, archiveInvoices, paidTodayInvoices]);
+
+  const kpis = useMemo(() => {
+    const totalAmount = knownInvoices.reduce((sum, invoice) => sum + getAmount(invoice), 0);
+    const pendingInvoices = knownInvoices.filter((invoice) => getStatus(invoice) !== 'Paid');
+    const paidInvoices = knownInvoices.filter((invoice) => getStatus(invoice) === 'Paid');
+    const pendingAmount = pendingInvoices.reduce((sum, invoice) => sum + getAmount(invoice), 0);
+    const paidAmount = paidInvoices.reduce((sum, invoice) => sum + getAmount(invoice), 0);
+    return {
+      totalInvoices: knownInvoices.length,
+      pendingAmount,
+      paidAmount,
+      unpaidInvoices: pendingInvoices.length,
+      paidInvoices: paidInvoices.length,
+      averageInvoiceValue: knownInvoices.length ? totalAmount / knownInvoices.length : 0
+    };
+  }, [knownInvoices]);
+
   const handleMarkSelectedInvoicePaid = async () => {
     if (!selectedInvoice?.id) throw new Error('No invoice selected.');
     if (!selectedInvoice.order_id) throw new Error('Invoice is missing linked order.');
@@ -275,36 +305,65 @@ export default function InvoicePage({ onMarkOrderPaid }: InvoicePageProps) {
   };
 
   return (
-    <div className="space-y-5 rounded-[24px] bg-[#0F172A] p-1">
-      <section className="rounded-[24px] border border-[#334155] bg-[#111111] p-6 shadow-panel">
-        <div className="flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between">
+    <div className="space-y-4 bg-[#0F172A]">
+      <section className="rounded-[20px] border border-[#334155] bg-[#111111] p-4 shadow-panel md:p-5">
+        <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
           <div>
-            <div className="mb-2 inline-flex rounded-full bg-[#C8A96B] px-4 py-2 text-sm font-semibold text-[#0F172A]">LBL INVOICE</div>
-            <h3 className="text-3xl font-semibold text-white">Invoice Management</h3>
-            <p className="mt-2 max-w-2xl text-sm text-slate-400">Action-first invoicing with paid records and archive kept out of the daily work queue.</p>
+            <p className="text-xs uppercase tracking-[0.24em] text-[#C8A96B]">Billing Operations</p>
+            <h3 className="mt-1.5 text-2xl font-semibold text-white">Invoice Command Center</h3>
+            <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-400">Manage invoice status, payment follow-up and billing records.</p>
           </div>
-          <button type="button" onClick={() => reloadPrimaryInvoices(selectedInvoice?.id)} disabled={isLoading} className="rounded-xl border border-[#C8A96B]/30 bg-[#C8A96B]/10 px-4 py-3 text-sm font-semibold text-[#C8A96B] disabled:opacity-50">
-            {isLoading ? 'Refreshing...' : 'Refresh Invoices'}
-          </button>
+          <div className="flex flex-wrap items-center gap-3">
+            <button type="button" onClick={() => reloadPrimaryInvoices(selectedInvoice?.id)} disabled={isLoading} className="rounded-xl bg-[#C8A96B] px-4 py-2.5 text-sm font-semibold text-[#111111] transition hover:bg-[#d6b77d] disabled:opacity-50">
+              {isLoading ? 'Refreshing...' : 'Refresh Invoices'}
+            </button>
+            <span className="rounded-xl border border-[#C8A96B]/30 bg-[#C8A96B]/10 px-3.5 py-2.5 text-xs font-semibold text-[#E4C98E]">Source: Supabase</span>
+          </div>
         </div>
       </section>
 
       {error && (
-        <section className="rounded-[20px] border border-[#EF4444]/30 bg-[#EF4444]/10 p-5">
+        <section className="rounded-[18px] border border-[#EF4444]/30 bg-[#EF4444]/10 p-4">
           <p className="text-xs uppercase tracking-[0.18em] text-[#FCA5A5]">Supabase invoice fallback</p>
           <p className="mt-2 text-sm text-[#FECACA]">{error}</p>
         </section>
       )}
 
-      <section className="flex flex-wrap gap-2">
-        {tabs.map((tab) => {
-          const count = tab === 'Need Action' ? stats.needAction : tab === 'Pending' ? stats.pending : tab === 'Overdue' ? stats.overdue : tab === 'Paid Today' ? stats.paidToday : archiveCount;
+      <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+        {([
+          ['Need Action', stats.needAction, 'Review invoices requiring staff action.'],
+          ['Pending Payment', stats.pending, 'Follow up unpaid customer invoices.'],
+          ['Overdue', stats.overdue, 'Prioritize payment reminder today.'],
+          ['Paid Today', stats.paidToday, 'Confirm paid records and receipts.'],
+          ['Archived', archiveCount, 'Search older billing history.']
+        ] as const).map(([label, count, hint]) => {
+          const targetTab: InvoiceTab = label === 'Archived' ? 'Archive' : label === 'Pending Payment' ? 'Pending' : label;
           return (
-            <button key={tab} type="button" onClick={() => setActiveTab(tab)} className={`rounded-xl border px-4 py-2.5 text-xs font-semibold transition ${activeTab === tab ? 'border-[#C8A96B] bg-[#C8A96B] text-[#0F172A]' : 'border-[#334155] bg-[#111111] text-slate-300 hover:border-[#C8A96B]/40'}`}>
-              {tab} <span className="ml-1 opacity-70">{count}</span>
+            <button key={label} type="button" onClick={() => setActiveTab(targetTab)} className={`rounded-[16px] border p-3.5 text-left shadow-panel transition ${activeTab === targetTab ? 'border-[#C8A96B]/70 bg-[#C8A96B]/10' : 'border-[#334155] bg-[#111111] hover:border-[#C8A96B]/40'}`}>
+              <div className="flex items-start justify-between gap-3">
+                <span className="text-xs uppercase tracking-[0.16em] text-slate-500">{label}</span>
+                <span className="rounded-full bg-[#C8A96B]/15 px-3 py-1 text-sm font-semibold text-[#E4C98E]">{count}</span>
+              </div>
+              <p className="mt-3 text-sm leading-5 text-slate-400">{hint}</p>
             </button>
           );
         })}
+      </section>
+
+      <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
+        {[
+          ['Total Invoices', kpis.totalInvoices],
+          ['Pending Amount', formatRM(kpis.pendingAmount)],
+          ['Paid Amount', formatRM(kpis.paidAmount)],
+          ['Unpaid Invoices', kpis.unpaidInvoices],
+          ['Paid Invoices', kpis.paidInvoices],
+          ['Average Invoice Value', formatRM(kpis.averageInvoiceValue)]
+        ].map(([label, value]) => (
+          <div key={label} className="rounded-[16px] border border-[#334155] bg-[#111111] p-3.5 shadow-panel transition hover:border-[#C8A96B]/40">
+            <p className="text-[11px] uppercase tracking-[0.16em] text-slate-500">{label}</p>
+            <p className="mt-3 text-2xl font-semibold text-white">{value}</p>
+          </div>
+        ))}
       </section>
 
       {activeTab === 'Archive' && (
@@ -329,11 +388,11 @@ export default function InvoicePage({ onMarkOrderPaid }: InvoicePageProps) {
         </section>
       )}
 
-      <div className="grid gap-5 xl:grid-cols-[320px_minmax(0,1fr)]">
-        <aside className="rounded-[20px] border border-[#334155] bg-[#111111] p-4 shadow-panel">
+      <div className="grid gap-4 xl:grid-cols-[320px_minmax(0,1fr)]">
+        <aside className="rounded-[18px] border border-[#334155] bg-[#111111] p-3.5 shadow-panel">
           <div className="mb-4 flex items-center justify-between gap-3">
             <div>
-              <p className="text-xs uppercase tracking-[0.18em] text-[#C8A96B]">{activeTab === 'Archive' ? 'Invoice Archive' : 'Active Invoice List'}</p>
+              <p className="text-xs uppercase tracking-[0.18em] text-[#C8A96B]">Compact Invoice Queue</p>
               <p className="mt-1 text-xs text-slate-500">{activeTab === 'Archive' ? '20 records per page' : 'Invoices requiring attention'}</p>
             </div>
             {activeTab === 'Archive' && <ArchiveIcon size={18} className="text-[#C8A96B]" />}
@@ -341,16 +400,16 @@ export default function InvoicePage({ onMarkOrderPaid }: InvoicePageProps) {
 
           <div className="max-h-[780px] space-y-2 overflow-y-auto pr-1">
             {(isLoading || archiveLoading) && <div className="rounded-[16px] border border-[#334155] bg-[#0F172A] p-5 text-sm text-slate-400">Loading invoices...</div>}
-            {!isLoading && !archiveLoading && displayedCurrentList.length === 0 && <div className="rounded-[16px] border border-dashed border-[#334155] bg-[#0F172A] p-6 text-center text-sm text-slate-400">No invoices in this view.</div>}
+            {!isLoading && !archiveLoading && displayedCurrentList.length === 0 && <div className="rounded-[16px] border border-dashed border-[#334155] bg-[#0F172A] p-5 text-center text-sm text-slate-400">No invoices in this view.</div>}
             {!isLoading && !archiveLoading && displayedCurrentList.map((invoice) => {
               const status = getStatus(invoice);
               const active = invoice.id === selectedInvoice?.id;
               return (
-                <button key={String(invoice.id ?? getInvoiceNo(invoice))} type="button" onClick={() => setSelectedInvoice(invoice)} className={`w-full rounded-[16px] border p-4 text-left transition ${active ? 'border-[#C8A96B] bg-[#C8A96B]/10' : 'border-[#334155] bg-[#0F172A] hover:border-[#C8A96B]/40'}`}>
+                <button key={String(invoice.id ?? getInvoiceNo(invoice))} type="button" onClick={() => setSelectedInvoice(invoice)} className={`w-full rounded-[16px] border p-3 text-left transition ${active ? 'border-[#C8A96B] bg-[#C8A96B]/10' : 'border-[#334155] bg-[#0F172A] hover:border-[#C8A96B]/40'}`}>
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <p className="truncate font-semibold text-white">{getInvoiceNo(invoice)}</p>
-                      <p className="mt-1 truncate text-sm text-slate-400">{getCustomerName(invoice)}</p>
+                      <p className="mt-1 truncate text-xs text-slate-400">{getCustomerName(invoice)}</p>
                     </div>
                     <span className={`shrink-0 rounded-full border px-2.5 py-1 text-[11px] font-semibold ${statusClass(status)}`}>{status}</span>
                   </div>
@@ -358,6 +417,7 @@ export default function InvoicePage({ onMarkOrderPaid }: InvoicePageProps) {
                     <span className="truncate text-slate-500">{getOrderNo(invoice) || 'No order'}</span>
                     <span className="font-semibold text-[#C8A96B]">{formatRM(getAmount(invoice))}</span>
                   </div>
+                  <p className="mt-2 truncate text-[11px] text-slate-500">{formatInvoiceDate(invoice)}</p>
                 </button>
               );
             })}
@@ -377,11 +437,46 @@ export default function InvoicePage({ onMarkOrderPaid }: InvoicePageProps) {
           )}
         </aside>
 
-        <main className="min-w-0">
+        <main className="min-w-0 space-y-4">
           {selectedInvoice ? (
-            <InvoiceTemplate invoice={selectedInvoice} onMarkPaid={handleMarkSelectedInvoicePaid} />
+            <>
+              <section className="rounded-[20px] border border-[#334155] bg-[#111111] p-4 shadow-panel">
+                <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.18em] text-[#C8A96B]">Selected Invoice Summary</p>
+                    <h4 className="mt-2 text-xl font-semibold text-white">{getInvoiceNo(selectedInvoice)}</h4>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className={`w-fit rounded-full border px-3 py-1 text-xs font-semibold ${statusClass(getStatus(selectedInvoice))}`}>{getStatus(selectedInvoice)}</span>
+                    <button
+                      type="button"
+                      onClick={() => setFullInvoiceOpen((current) => !current)}
+                      className="rounded-full border border-[#C8A96B]/30 bg-[#C8A96B]/10 px-4 py-2 text-xs font-semibold text-[#E4C98E] transition hover:border-[#C8A96B]/60 hover:bg-[#C8A96B]/20"
+                    >
+                      {fullInvoiceOpen ? 'Collapse Invoice' : 'Show Full Invoice'}
+                    </button>
+                  </div>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                  {[
+                    ['Invoice Status', getStatus(selectedInvoice)],
+                    ['Payment Status', String(selectedInvoice.payment_status ?? selectedInvoice.paymentStatus ?? selectedInvoice.status ?? 'Pending')],
+                    ['Order Status', String(selectedInvoice.order_status ?? selectedInvoice.orderStatus ?? '-')],
+                    ['Amount', formatRM(getAmount(selectedInvoice))],
+                    ['Customer', getCustomerName(selectedInvoice)],
+                    ['Delivery Date', String(selectedInvoice.delivery_date ?? selectedInvoice.deliveryDate ?? '-')]
+                  ].map(([label, value]) => (
+                    <div key={label} className="rounded-[16px] border border-[#334155] bg-[#0F172A] p-3">
+                      <p className="text-[11px] uppercase tracking-[0.14em] text-slate-500">{label}</p>
+                      <p className="mt-2 truncate text-sm font-semibold text-white">{value}</p>
+                    </div>
+                  ))}
+                </div>
+              </section>
+              <InvoiceTemplate invoice={selectedInvoice} onMarkPaid={handleMarkSelectedInvoicePaid} previewMode={fullInvoiceOpen ? 'full' : 'compact'} />
+            </>
           ) : (
-            <div className="rounded-[20px] border border-[#334155] bg-[#111111] p-10 text-center shadow-panel">
+            <div className="rounded-[18px] border border-[#334155] bg-[#111111] p-7 text-center shadow-panel">
               <p className="text-xs uppercase tracking-[0.2em] text-[#C8A96B]">Invoice Preview</p>
               <h3 className="mt-3 text-2xl font-semibold text-white">No invoice selected</h3>
               <p className="mt-3 text-sm text-slate-400">Choose an invoice from the active list, paid list, or archive.</p>
@@ -417,6 +512,70 @@ export default function InvoicePage({ onMarkOrderPaid }: InvoicePageProps) {
               </div>
             ))}
             {!isLoading && paidTodayInvoices.length === 0 && <p className="border-t border-[#334155] px-5 py-8 text-center text-sm text-slate-500">No paid invoices today.</p>}
+          </div>
+        )}
+      </section>
+
+      <section className="overflow-hidden rounded-[20px] border border-[#334155] bg-[#111111] shadow-panel">
+        <button
+          type="button"
+          onClick={() => {
+            setArchiveOpen((current) => !current);
+            setActiveTab('Archive');
+          }}
+          className="flex w-full items-center justify-between gap-4 px-5 py-4 text-left transition hover:bg-white/[0.03]"
+          aria-expanded={archiveOpen}
+        >
+          <div>
+            <p className="font-semibold text-white">Archived / Paid History</p>
+            <p className="mt-1 text-xs text-slate-500">Search older billing records only when needed.</p>
+          </div>
+          <div className="flex items-center gap-3">
+            <span className="rounded-full border border-[#C8A96B]/30 bg-[#C8A96B]/10 px-3 py-1 text-xs font-semibold text-[#E4C98E]">{archiveCount}</span>
+            {archiveOpen ? <ChevronUp size={18} className="text-[#C8A96B]" /> : <ChevronDown size={18} className="text-[#C8A96B]" />}
+          </div>
+        </button>
+
+        {archiveOpen && (
+          <div className="border-t border-[#334155] p-4">
+            <div className="grid gap-3 lg:grid-cols-[1.4fr_1fr_1fr_0.8fr]">
+              <label className="relative">
+                <Search size={15} className="absolute left-3 top-3.5 text-slate-500" />
+                <input value={archiveSearch} onChange={(event) => setArchiveSearch(event.target.value)} placeholder="Invoice no, customer or phone" className="h-11 w-full rounded-xl border border-[#334155] bg-[#0F172A] pl-10 pr-3 text-sm text-white outline-none placeholder:text-slate-600 focus:border-[#C8A96B]/50" />
+              </label>
+              <input type="date" value={archiveDateFrom} onChange={(event) => setArchiveDateFrom(event.target.value)} className="h-11 rounded-xl border border-[#334155] bg-[#0F172A] px-3 text-sm text-white outline-none" />
+              <input type="date" value={archiveDateTo} onChange={(event) => setArchiveDateTo(event.target.value)} className="h-11 rounded-xl border border-[#334155] bg-[#0F172A] px-3 text-sm text-white outline-none" />
+              <select value={archiveStatus} onChange={(event) => setArchiveStatus(event.target.value)} className="h-11 rounded-xl border border-[#334155] bg-[#0F172A] px-3 text-sm text-white outline-none">
+                <option>All</option>
+                <option>Paid</option>
+                <option>Pending</option>
+                <option>Overdue</option>
+                <option>Draft</option>
+                <option>Unsent</option>
+              </select>
+            </div>
+
+            <div className="mt-4 space-y-2">
+              {archiveLoading && <div className="rounded-[16px] border border-[#334155] bg-[#0F172A] p-5 text-sm text-slate-400">Loading archive...</div>}
+              {!archiveLoading && archiveInvoices.length === 0 && <div className="rounded-[16px] border border-dashed border-[#334155] bg-[#0F172A] p-6 text-center text-sm text-slate-500">No archived invoices in this filter.</div>}
+              {!archiveLoading && archiveInvoices.map((invoice) => (
+                <button key={`archive-${String(invoice.id ?? getInvoiceNo(invoice))}`} type="button" onClick={() => setSelectedInvoice(invoice)} className="grid w-full gap-3 rounded-[14px] border border-[#334155] bg-[#0F172A] p-3 text-left text-sm transition hover:border-[#C8A96B]/40 md:grid-cols-[1.1fr_1.2fr_0.8fr_1fr_auto] md:items-center">
+                  <span className="truncate font-semibold text-white">{getInvoiceNo(invoice)}</span>
+                  <span className="truncate text-slate-300">{getCustomerName(invoice)}</span>
+                  <span className="font-semibold text-[#E4C98E]">{formatRM(getAmount(invoice))}</span>
+                  <span className="text-xs text-slate-500">{formatInvoiceDate(invoice)}</span>
+                  <span className={`w-fit rounded-full border px-2.5 py-1 text-[11px] font-semibold ${statusClass(getStatus(invoice))}`}>{getStatus(invoice)}</span>
+                </button>
+              ))}
+            </div>
+
+            <div className="mt-4 flex items-center justify-between gap-3 border-t border-[#334155] pt-4">
+              <span className="text-xs text-slate-500">Page {archivePage} / {archivePageCount}</span>
+              <div className="flex gap-2">
+                <button type="button" onClick={() => setArchivePage((page) => Math.max(page - 1, 1))} disabled={archivePage === 1} className="rounded-lg border border-[#334155] px-3 py-2 text-xs text-slate-300 disabled:opacity-40">Prev</button>
+                <button type="button" onClick={() => setArchivePage((page) => Math.min(page + 1, archivePageCount))} disabled={archivePage >= archivePageCount} className="rounded-lg border border-[#334155] px-3 py-2 text-xs text-slate-300 disabled:opacity-40">Next</button>
+              </div>
+            </div>
           </div>
         )}
       </section>

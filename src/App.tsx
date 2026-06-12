@@ -516,7 +516,7 @@ useEffect(() => {
       case 'sales-crm':
         return <SalesCRMPage />;
       case 'sales-dashboard':
-        return <CorporateSalesDashboardPage />;
+        return <CorporateSalesDashboardPage orders={orders} />;
       case 'corporate-accounts':
         return <CorporateAccountsPage orders={orders} />;
       case 'quotations':

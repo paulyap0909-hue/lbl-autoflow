@@ -19,13 +19,17 @@ import {
 import Toast from '../components/Toast';
 import {
   createLeadActivityInSupabase,
+  loadLeadActivitiesFromSupabase,
   loadSalesLeadsFromSupabase,
   updateSalesLeadInSupabase,
+  type LeadActivity,
   type SalesLead,
   type SalesLeadPriority,
   type SalesLeadStatus,
   type SalesLeadType
 } from '../services/salesLeadService';
+import { loadQuotationsFromSupabase, type Quotation } from '../services/quotationService';
+import type { Order } from '../data/mockData';
 import { formatRM, toSafeNumber } from '../utils/pricing';
 
 type PipelineStage =
@@ -40,6 +44,26 @@ type PipelineStage =
 type PriorityFilter = 'All' | SalesLeadPriority;
 type TypeFilter = 'All' | SalesLeadType;
 type StageFilter = 'All' | PipelineStage;
+type FollowUpFilter = 'All' | 'Hot' | 'No Reply' | 'Quotation' | 'New Lead' | 'Repeat Opportunity';
+type FollowUpReason =
+  | 'Needs First Contact'
+  | 'No Reply Follow-Up'
+  | 'Send Quotation'
+  | 'Quotation Follow-Up'
+  | 'Repeat Order Opportunity'
+  | 'Scheduled Follow-Up'
+  | 'Hot Lead Review';
+
+type CorporateFollowUp = {
+  lead: SalesLead;
+  reason: FollowUpReason;
+  category: Exclude<FollowUpFilter, 'All'> | 'Scheduled';
+  suggestedAction: string;
+  daysSinceActivity: number;
+  dueDate: string;
+  overdue: boolean;
+  quotation?: Quotation;
+};
 
 const PIPELINE_STAGES: PipelineStage[] = [
   'New Lead',
@@ -68,7 +92,52 @@ May I know who is the right person to contact regarding office tea breaks, staff
 
 We prepare premium mini tarts for company events, meetings and celebrations.`;
 
-const todayKey = () => new Date().toISOString().slice(0, 10);
+const localDateKey = (date: Date) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+const todayKey = () => localDateKey(new Date());
+
+const dateKey = (value?: string) => {
+  if (!value) return '';
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value.slice(0, 10))) return value.slice(0, 10);
+  const parsed = new Date(value);
+  return Number.isFinite(parsed.getTime()) ? localDateKey(parsed) : '';
+};
+
+const dateValue = (value?: string) => {
+  const key = dateKey(value);
+  if (!key) return 0;
+  const parsed = new Date(`${key}T00:00:00`).getTime();
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+
+const daysSince = (value?: string) => {
+  const timestamp = dateValue(value);
+  const today = dateValue(todayKey());
+  if (!timestamp || !today) return 0;
+  return Math.max(Math.floor((today - timestamp) / 86400000), 0);
+};
+
+const addDays = (value: string, days: number) => {
+  const key = dateKey(value);
+  if (!key) return todayKey();
+  const [year, month, day] = key.split('-').map(Number);
+  const date = new Date(year, month - 1, day);
+  date.setDate(date.getDate() + days);
+  return localDateKey(date);
+};
+
+const latestDate = (values: Array<string | undefined>) =>
+  values
+    .filter((value): value is string => Boolean(value) && dateValue(value) > 0)
+    .sort((a, b) => dateValue(b) - dateValue(a))[0] || '';
+
+const normalizeText = (value: unknown) =>
+  String(value || '').trim().toLowerCase().replace(/[^a-z0-9]/g, '');
 
 const normalizeMalaysiaPhone = (phone: string) => {
   const digits = String(phone || '').replace(/\D/g, '');
@@ -129,8 +198,42 @@ const isFollowUpDue = (lead: SalesLead) =>
   lead.nextFollowUpDate <= todayKey() &&
   !['Won', 'Lost', 'Archived'].includes(lead.status);
 
-const hasNoActivity = (lead: SalesLead) =>
-  !lead.lastContactDate && lead.messagesSent <= 0 && lead.status === 'New';
+const getOrderDate = (order: Order) =>
+  order.statusHistory?.[order.statusHistory.length - 1]?.timestamp || order.deliveryDate || '';
+
+const orderMatchesLead = (order: Order, lead: SalesLead) => {
+  const orderPhone = normalizeMalaysiaPhone(order.phone);
+  const leadPhone = normalizeMalaysiaPhone(lead.phone);
+  if (orderPhone && leadPhone) return orderPhone === leadPhone;
+  return Boolean(normalizeText(order.customerName)) &&
+    normalizeText(order.customerName) === normalizeText(lead.companyName);
+};
+
+const followUpReasonTone = (reason: FollowUpReason) => {
+  if (reason === 'Quotation Follow-Up' || reason === 'Send Quotation') {
+    return 'border-violet-400/25 bg-violet-400/10 text-violet-200';
+  }
+  if (reason === 'Repeat Order Opportunity') {
+    return 'border-emerald-400/25 bg-emerald-400/10 text-emerald-200';
+  }
+  if (reason === 'No Reply Follow-Up') {
+    return 'border-amber-400/25 bg-amber-400/10 text-amber-200';
+  }
+  if (reason === 'Needs First Contact') {
+    return 'border-sky-400/25 bg-sky-400/10 text-sky-200';
+  }
+  return 'border-[#C8A96B]/25 bg-[#C8A96B]/10 text-[#E4C98E]';
+};
+
+const isMeaningfulSalesActivity = (activity: LeadActivity) => {
+  const activityType = String(activity.activityType || '').toLowerCase();
+  return ![
+    'lead created',
+    'lead scored',
+    'automation',
+    'auto follow-up schedule'
+  ].some((ignoredType) => activityType.includes(ignoredType));
+};
 
 function KpiCard({
   label,
@@ -259,29 +362,60 @@ function LeadCard({
   );
 }
 
-export default function CorporateSalesDashboardPage() {
+export default function CorporateSalesDashboardPage({ orders = [] }: { orders?: Order[] }) {
   const [leads, setLeads] = useState<SalesLead[]>([]);
+  const [activities, setActivities] = useState<LeadActivity[]>([]);
+  const [quotations, setQuotations] = useState<Quotation[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
+  const [warnings, setWarnings] = useState<string[]>([]);
+  const [dataAvailability, setDataAvailability] = useState({
+    activities: false,
+    quotations: false
+  });
   const [searchTerm, setSearchTerm] = useState('');
   const [priorityFilter, setPriorityFilter] = useState<PriorityFilter>('All');
   const [leadTypeFilter, setLeadTypeFilter] = useState<TypeFilter>('All');
   const [stageFilter, setStageFilter] = useState<StageFilter>('All');
+  const [followUpFilter, setFollowUpFilter] = useState<FollowUpFilter>('All');
   const [busyLeadId, setBusyLeadId] = useState<string | number | null>(null);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
 
   const reload = async () => {
-    try {
-      const leadData = await loadSalesLeadsFromSupabase();
-      setLeads(leadData);
-      setError('');
-    } catch (loadError) {
-      console.error('Corporate sales pipeline load error:', loadError);
+    const [leadResult, activityResult, quotationResult] = await Promise.allSettled([
+      loadSalesLeadsFromSupabase(),
+      loadLeadActivitiesFromSupabase(),
+      loadQuotationsFromSupabase()
+    ]);
+    const nextWarnings: string[] = [];
+
+    if (leadResult.status === 'fulfilled') {
+      setLeads(leadResult.value);
+    } else {
+      console.error('Corporate sales pipeline load error:', leadResult.reason);
       setLeads([]);
-      setError('Unable to load live Corporate Leads data from Supabase.');
-    } finally {
-      setLoading(false);
+      nextWarnings.push('Corporate leads could not be loaded.');
     }
+    if (activityResult.status === 'fulfilled') {
+      setActivities(activityResult.value);
+    } else {
+      console.error('Corporate follow-up activity load error:', activityResult.reason);
+      setActivities([]);
+      nextWarnings.push('Activity history is temporarily unavailable.');
+    }
+    if (quotationResult.status === 'fulfilled') {
+      setQuotations(quotationResult.value);
+    } else {
+      console.error('Corporate follow-up quotation load error:', quotationResult.reason);
+      setQuotations([]);
+      nextWarnings.push('Quotation follow-up data is temporarily unavailable.');
+    }
+
+    setDataAvailability({
+      activities: activityResult.status === 'fulfilled',
+      quotations: quotationResult.status === 'fulfilled'
+    });
+    setWarnings(nextWarnings);
+    setLoading(false);
   };
 
   useEffect(() => {
@@ -342,17 +476,181 @@ export default function CorporateSalesDashboardPage() {
     [filteredLeads]
   );
 
-  const followUpLeads = useMemo(
-    () =>
-      analytics.visibleLeads
-        .filter((lead) => isFollowUpDue(lead) || hasNoActivity(lead))
-        .sort((a, b) => {
-          if (isFollowUpDue(a) !== isFollowUpDue(b)) return isFollowUpDue(a) ? -1 : 1;
-          return (a.nextFollowUpDate || todayKey()).localeCompare(b.nextFollowUpDate || todayKey());
-        })
-        .slice(0, 8),
-    [analytics.visibleLeads]
+  const corporateFollowUps = useMemo(() => {
+    const activitiesByLead = new Map<string, LeadActivity[]>();
+    activities.forEach((activity) => {
+      const leadId = String(activity.leadId || '');
+      activitiesByLead.set(leadId, [...(activitiesByLead.get(leadId) || []), activity]);
+    });
+    const quotationsByLead = new Map<string, Quotation[]>();
+    quotations.forEach((quotation) => {
+      const leadId = String(quotation.leadId || '');
+      quotationsByLead.set(leadId, [...(quotationsByLead.get(leadId) || []), quotation]);
+    });
+
+    return analytics.visibleLeads
+      .flatMap((lead): CorporateFollowUp[] => {
+        const leadId = String(lead.id || '');
+        const leadActivities = activitiesByLead.get(leadId) || [];
+        const meaningfulActivities = leadActivities.filter(isMeaningfulSalesActivity);
+        const leadQuotations = quotationsByLead.get(leadId) || [];
+        const latestActivity = latestDate([
+          ...meaningfulActivities.map((activity) => activity.createdAt),
+          lead.lastContactDate,
+          lead.createdAt
+        ]);
+        const activeQuotation = leadQuotations
+          .filter((quotation) => ['Sent', 'Viewed', 'Negotiating'].includes(quotation.status))
+          .sort((a, b) => dateValue(b.updatedAt || b.createdAt) - dateValue(a.updatedAt || a.createdAt))[0];
+        const hasSentQuotation = leadQuotations.some((quotation) =>
+          ['Sent', 'Viewed', 'Negotiating', 'Accepted'].includes(quotation.status)
+        );
+        const matchedOrderDates = orders
+          .filter((order) => orderMatchesLead(order, lead))
+          .map(getOrderDate);
+        const latestWonTouch = latestDate([
+          latestActivity,
+          lead.updatedAt,
+          ...matchedOrderDates
+        ]);
+        const scheduledDue = Boolean(lead.nextFollowUpDate) && lead.nextFollowUpDate <= todayKey();
+        let item: CorporateFollowUp | null = null;
+
+        if (lead.status === 'Lost') return [];
+
+        if (lead.status === 'Won') {
+          if (!dataAvailability.activities || daysSince(latestWonTouch) < 14) return [];
+          return [{
+            lead,
+            reason: 'Repeat Order Opportunity',
+            category: 'Repeat Opportunity',
+            suggestedAction: 'Ask about the next event or staff order.',
+            daysSinceActivity: daysSince(latestWonTouch),
+            dueDate: addDays(latestWonTouch || lead.updatedAt || lead.createdAt || todayKey(), 14),
+            overdue: daysSince(latestWonTouch) > 14
+          }];
+        }
+
+        if (dataAvailability.quotations && activeQuotation) {
+          const referenceDate = activeQuotation.updatedAt || activeQuotation.createdAt || '';
+          if (daysSince(referenceDate) >= 3) {
+            item = {
+              lead,
+              reason: 'Quotation Follow-Up',
+              category: 'Quotation',
+              suggestedAction: `Follow up on ${activeQuotation.quoteNo || 'the quotation'}.`,
+              daysSinceActivity: daysSince(referenceDate),
+              dueDate: addDays(referenceDate, 3),
+              overdue: daysSince(referenceDate) > 3,
+              quotation: activeQuotation
+            };
+          }
+        } else if (
+          dataAvailability.activities &&
+          dataAvailability.quotations &&
+          lead.status === 'Interested' &&
+          !hasSentQuotation &&
+          daysSince(latestActivity) >= 2
+        ) {
+          item = {
+            lead,
+            reason: 'Send Quotation',
+            category: 'Quotation',
+            suggestedAction: 'Prepare and send a quotation.',
+            daysSinceActivity: daysSince(latestActivity),
+            dueDate: addDays(latestActivity || lead.createdAt || todayKey(), 2),
+            overdue: daysSince(latestActivity) > 2
+          };
+        } else if (
+          dataAvailability.activities &&
+          lead.status === 'Contacted' &&
+          daysSince(latestActivity) >= 3
+        ) {
+          item = {
+            lead,
+            reason: 'No Reply Follow-Up',
+            category: 'No Reply',
+            suggestedAction: 'Send a short follow-up message.',
+            daysSinceActivity: daysSince(latestActivity),
+            dueDate: addDays(latestActivity || lead.createdAt || todayKey(), 3),
+            overdue: daysSince(latestActivity) > 3
+          };
+        } else if (
+          lead.status === 'New' &&
+          dataAvailability.activities &&
+          meaningfulActivities.length === 0 &&
+          !lead.lastContactDate &&
+          daysSince(lead.createdAt) >= 1
+        ) {
+          item = {
+            lead,
+            reason: 'Needs First Contact',
+            category: 'New Lead',
+            suggestedAction: 'Open WhatsApp and introduce LBL.',
+            daysSinceActivity: daysSince(lead.createdAt),
+            dueDate: addDays(lead.createdAt || todayKey(), 1),
+            overdue: daysSince(lead.createdAt) > 1
+          };
+        } else if (scheduledDue && !['Lost', 'Archived'].includes(lead.status)) {
+          item = {
+            lead,
+            reason: 'Scheduled Follow-Up',
+            category: 'Scheduled',
+            suggestedAction: 'Complete the scheduled follow-up.',
+            daysSinceActivity: daysSince(latestActivity),
+            dueDate: lead.nextFollowUpDate,
+            overdue: lead.nextFollowUpDate < todayKey()
+          };
+        } else if (
+          (lead.leadPriority === 'Hot' || lead.leadScore >= 80) &&
+          !['Won', 'Lost', 'Archived'].includes(lead.status)
+        ) {
+          item = {
+            lead,
+            reason: 'Hot Lead Review',
+            category: 'Hot',
+            suggestedAction: 'Prioritize a personal sales check-in today.',
+            daysSinceActivity: daysSince(latestActivity),
+            dueDate: todayKey(),
+            overdue: false
+          };
+        }
+
+        return item ? [item] : [];
+      })
+      .sort((a, b) => {
+        const aHot = a.lead.leadPriority === 'Hot' || a.lead.leadScore >= 80;
+        const bHot = b.lead.leadPriority === 'Hot' || b.lead.leadScore >= 80;
+        if (aHot !== bHot) return aHot ? -1 : 1;
+        if (a.overdue !== b.overdue) return a.overdue ? -1 : 1;
+        if ((a.category === 'Quotation') !== (b.category === 'Quotation')) return a.category === 'Quotation' ? -1 : 1;
+        if ((a.category === 'New Lead') !== (b.category === 'New Lead')) return a.category === 'New Lead' ? -1 : 1;
+        return b.daysSinceActivity - a.daysSinceActivity;
+      });
+  }, [activities, analytics.visibleLeads, dataAvailability, orders, quotations]);
+
+  const filteredFollowUps = useMemo(
+    () => corporateFollowUps.filter((item) => {
+      if (followUpFilter === 'All') return true;
+      if (followUpFilter === 'Hot') {
+        return !['Won', 'Lost', 'Archived'].includes(item.lead.status) &&
+          (item.lead.leadPriority === 'Hot' || item.lead.leadScore >= 80);
+      }
+      return item.category === followUpFilter;
+    }),
+    [corporateFollowUps, followUpFilter]
   );
+
+  const followUpStats = useMemo(() => ({
+    dueToday: corporateFollowUps.filter((item) => item.dueDate === todayKey()).length,
+    overdue: corporateFollowUps.filter((item) => item.overdue).length,
+    hot: corporateFollowUps.filter((item) =>
+      !['Won', 'Lost', 'Archived'].includes(item.lead.status) &&
+      (item.lead.leadPriority === 'Hot' || item.lead.leadScore >= 80)
+    ).length,
+    quotations: corporateFollowUps.filter((item) => item.category === 'Quotation').length,
+    repeat: corporateFollowUps.filter((item) => item.category === 'Repeat Opportunity').length
+  }), [corporateFollowUps]);
 
   const notifyChanged = () => {
     localStorage.setItem('lbl_sales_crm_updated_at', new Date().toISOString());
@@ -432,6 +730,19 @@ export default function CorporateSalesDashboardPage() {
     }
   };
 
+  const openFollowUpWhatsApp = (lead: SalesLead) => {
+    const phone = normalizeMalaysiaPhone(lead.phone);
+    if (!phone) {
+      setToast({ message: 'Phone number missing.', type: 'error' });
+      return;
+    }
+    window.open(
+      `https://wa.me/${phone}?text=${encodeURIComponent(CORPORATE_WHATSAPP_MESSAGE)}`,
+      '_blank',
+      'noopener,noreferrer'
+    );
+  };
+
   const kpis = [
     { label: 'Total Leads', value: analytics.total, note: 'Excluding archived', icon: Building2, tone: 'border-[#C8A96B]/25 bg-[#C8A96B]/10 text-[#E4C98E]' },
     { label: 'Hot Leads', value: analytics.hot, note: 'Priority or score 80+', icon: Flame, tone: 'border-rose-400/25 bg-rose-400/10 text-rose-300' },
@@ -460,9 +771,10 @@ export default function CorporateSalesDashboardPage() {
         </div>
       </section>
 
-      {error && (
-        <div className="rounded-[14px] border border-rose-400/25 bg-rose-400/10 p-3 text-sm text-rose-200">
-          {error}
+      {warnings.length > 0 && (
+        <div className="rounded-[14px] border border-amber-400/25 bg-amber-400/10 p-3 text-sm text-amber-100">
+          <p className="font-semibold">Some follow-up signals are temporarily unavailable.</p>
+          <p className="mt-1 text-xs text-amber-100/75">{warnings.join(' ')}</p>
         </div>
       )}
 
@@ -498,6 +810,22 @@ export default function CorporateSalesDashboardPage() {
         </div>
       </section>
 
+      <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+        {[
+          ['Due Today', followUpStats.dueToday, 'Follow up today'],
+          ['Overdue', followUpStats.overdue, 'Past recommended date'],
+          ['Hot Leads', followUpStats.hot, 'Priority opportunities'],
+          ['Quotation Follow-Ups', followUpStats.quotations, 'Quotes needing action'],
+          ['Repeat Opportunities', followUpStats.repeat, 'Won leads to re-engage']
+        ].map(([label, value, note]) => (
+          <article key={label} className="ds-card rounded-xl border border-[#334155] bg-[#111111] p-3.5">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[#64748B]">{label}</p>
+            <p className="mt-2 text-2xl font-semibold text-white">{value}</p>
+            <p className="mt-1 text-[11px] text-[#94A3B8]">{note}</p>
+          </article>
+        ))}
+      </section>
+
       <section className="ds-card overflow-hidden rounded-xl border border-[#334155] bg-[#111111]">
         <div className="flex items-center justify-between gap-3 border-b border-[#334155] px-4 py-3">
           <div>
@@ -505,36 +833,73 @@ export default function CorporateSalesDashboardPage() {
             <h2 className="mt-1 text-base font-semibold text-white">Today&apos;s Corporate Follow-ups</h2>
           </div>
           <span className="rounded-full bg-[#C8A96B]/10 px-2.5 py-1 text-xs font-semibold text-[#E4C98E]">
-            {followUpLeads.length}
+            {filteredFollowUps.length}
           </span>
         </div>
-        {followUpLeads.length > 0 ? (
-          <div className="grid gap-2 p-3 md:grid-cols-2 xl:grid-cols-4">
-            {followUpLeads.map((lead) => (
+        <div className="flex flex-wrap gap-2 border-b border-[#334155] px-3 py-2.5">
+          {(['All', 'Hot', 'No Reply', 'Quotation', 'New Lead', 'Repeat Opportunity'] as FollowUpFilter[]).map((filter) => (
+            <button
+              key={filter}
+              type="button"
+              onClick={() => setFollowUpFilter(filter)}
+              className={`min-h-8 rounded-lg border px-3 text-[11px] font-semibold transition ${
+                followUpFilter === filter
+                  ? 'border-[#C8A96B]/40 bg-[#C8A96B]/15 text-[#E4C98E]'
+                  : 'border-[#334155] bg-[#0F172A] text-[#94A3B8] hover:text-white'
+              }`}
+            >
+              {filter}
+            </button>
+          ))}
+        </div>
+        {filteredFollowUps.length > 0 ? (
+          <div className="grid gap-2 p-3 md:grid-cols-2 xl:grid-cols-3">
+            {filteredFollowUps.map((item) => {
+              const lead = item.lead;
+              return (
               <article key={String(lead.id || lead.companyName)} className="rounded-xl border border-[#334155] bg-[#0F172A] p-3">
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
                     <p className="truncate text-xs font-semibold text-white">{lead.companyName}</p>
-                    <p className="mt-1 truncate text-[10px] text-[#64748B]">
-                      {isFollowUpDue(lead) ? `Due ${lead.nextFollowUpDate}` : 'First outreach needed'}
-                    </p>
+                    <p className="mt-1 truncate text-[10px] text-[#64748B]">{lead.contactPerson || 'No contact person'} · {lead.phone || 'No phone'}</p>
                   </div>
-                  <CalendarClock size={14} className={isFollowUpDue(lead) ? 'shrink-0 text-rose-300' : 'shrink-0 text-[#C8A96B]'} />
+                  <span className={`rounded-full border px-2 py-0.5 text-[9px] font-semibold ${priorityTone(lead.leadPriority)}`}>
+                    {lead.leadPriority}
+                  </span>
+                </div>
+                <div className="mt-3 flex flex-wrap items-center gap-1.5">
+                  <span className={`rounded-md border px-2 py-1 text-[9px] font-semibold ${stageTone(stageFromStatus(lead.status) || 'New Lead')}`}>
+                    {stageFromStatus(lead.status) || lead.status}
+                  </span>
+                  <span className={`rounded-md border px-2 py-1 text-[9px] font-semibold ${followUpReasonTone(item.reason)}`}>
+                    {item.reason}
+                  </span>
+                  {item.overdue && <span className="rounded-md border border-rose-400/25 bg-rose-400/10 px-2 py-1 text-[9px] font-semibold text-rose-200">Overdue</span>}
+                </div>
+                <div className="mt-3 grid grid-cols-2 gap-2 rounded-lg border border-[#263348] bg-[#111111] p-2.5 text-[10px]">
+                  <div>
+                    <p className="text-[#64748B]">Since activity</p>
+                    <p className="mt-1 font-semibold text-white">{item.daysSinceActivity} days</p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-[#64748B]">Suggested action</p>
+                    <p className="mt-1 font-semibold text-[#E4C98E]">{item.suggestedAction}</p>
+                  </div>
                 </div>
                 <button
                   type="button"
                   disabled={!normalizeMalaysiaPhone(lead.phone)}
-                  onClick={() => openWhatsApp(lead)}
+                  onClick={() => openFollowUpWhatsApp(lead)}
                   className="mt-3 flex min-h-8 w-full items-center justify-center gap-1.5 rounded-lg bg-emerald-500/20 text-[10px] font-semibold text-emerald-200 disabled:opacity-35"
                 >
                   <MessageCircle size={12} />
                   WhatsApp
                 </button>
               </article>
-            ))}
+            )})}
           </div>
         ) : (
-          <div className="px-4 py-8 text-center text-sm text-[#64748B]">No corporate follow-ups need action today.</div>
+          <div className="px-4 py-8 text-center text-sm text-[#64748B]">All corporate leads are up to date.</div>
         )}
       </section>
 

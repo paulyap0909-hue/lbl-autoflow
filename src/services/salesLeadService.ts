@@ -1,4 +1,4 @@
-import { supabase } from '../lib/supabase';
+import { getActiveSupabaseSession, supabase } from '../lib/supabase';
 
 export type SalesLeadStatus = 'New' | 'Contacted' | 'Interested' | 'Sample Scheduled' | 'Quoted' | 'Won' | 'Lost' | 'Archived';
 export type SalesLeadType = 'Corporate' | 'Event Planner' | 'Wedding Planner' | 'Cafe' | 'Hotel' | 'School' | 'Government' | 'Other';
@@ -160,6 +160,8 @@ export const salesLeadToRow = (lead: SalesLead) => ({
 });
 
 export async function loadSalesLeadsFromSupabase() {
+  await getActiveSupabaseSession();
+
   const { data, error } = await supabase
     .from('sales_leads')
     .select('*')
@@ -174,6 +176,8 @@ export async function loadSalesLeadsFromSupabase() {
 }
 
 export async function createSalesLeadInSupabase(lead: SalesLead) {
+  await getActiveSupabaseSession();
+
   const { data, error } = await supabase
     .from('sales_leads')
     .insert(salesLeadToRow(lead))
@@ -201,6 +205,7 @@ export async function createSalesLeadInSupabase(lead: SalesLead) {
 
 export async function updateSalesLeadInSupabase(lead: SalesLead) {
   if (!lead.id) throw new Error('Sales lead ID missing.');
+  await getActiveSupabaseSession();
 
   const { data, error } = await supabase
     .from('sales_leads')
@@ -217,6 +222,23 @@ export async function updateSalesLeadInSupabase(lead: SalesLead) {
   return salesLeadFromRow(data as SalesLeadRow);
 }
 
+export async function recordSalesLeadWhatsAppContact(
+  lead: SalesLead,
+  contactDate: string,
+  nextFollowUpDate: string
+) {
+  if (['Won', 'Lost', 'Archived'].includes(lead.status)) return lead;
+
+  return updateSalesLeadInSupabase({
+    ...lead,
+    status: lead.status === 'New' ? 'Contacted' : lead.status,
+    lastContactDate: contactDate,
+    nextFollowUpDate,
+    messagesSent: lead.messagesSent + 1,
+    whatsappReady: true
+  });
+}
+
 export async function archiveSalesLeadInSupabase(lead: SalesLead) {
   return updateSalesLeadInSupabase({
     ...lead,
@@ -228,6 +250,8 @@ export async function deleteSalesLeadsFromSupabase(
   leadIds: Array<number | string>,
   performedBy: string
 ) {
+  await getActiveSupabaseSession();
+
   const numericIds = leadIds
     .map((leadId) => Number(leadId))
     .filter((leadId) => Number.isFinite(leadId));
@@ -248,6 +272,8 @@ export async function deleteSalesLeadsFromSupabase(
 }
 
 export async function loadLeadActivitiesFromSupabase() {
+  await getActiveSupabaseSession();
+
   const { data, error } = await supabase
     .from('lead_activities')
     .select('*')
@@ -274,6 +300,7 @@ export async function loadLeadActivitiesFromSupabase() {
 export async function createLeadActivityInSupabase(activity: LeadActivity) {
   const numericLeadId = Number(activity.leadId);
   if (!Number.isFinite(numericLeadId)) throw new Error('Lead activity requires a Supabase lead ID.');
+  await getActiveSupabaseSession();
 
   const { data, error } = await supabase
     .from('lead_activities')

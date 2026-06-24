@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { supabase } from '../lib/supabase';
 
 export type UserRole = 'admin' | 'sales';
 
@@ -8,34 +9,56 @@ export type CurrentUser = {
 };
 
 type LoginPageProps = {
-  onLogin: (user: CurrentUser) => void;
+  onLogin?: (user: CurrentUser) => void;
 };
 
-const accounts: Array<CurrentUser & { password: string }> = [
-  { email: 'paulyap0909@gmail.com', password: 'admin123', role: 'admin' },
-  { email: 'layerbylayermy@gmail.com', password: 'sales123', role: 'sales' }
-];
+const roleFromSignedInUser = (email: string, metadataRole?: unknown): UserRole => {
+  if (metadataRole === 'admin' || metadataRole === 'sales') return metadataRole;
+  return email.toLowerCase() === 'paulyap0909@gmail.com' ? 'admin' : 'sales';
+};
 
 export default function LoginPage({ onLogin }: LoginPageProps) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
+  const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const account = accounts.find(
-      (item) => item.email.toLowerCase() === email.trim().toLowerCase() && item.password === password
-    );
+    setError('');
+    setIsSubmitting(true);
 
-    if (!account) {
-      setError('Invalid email or password.');
-      return;
+    try {
+      const { data, error: signInError } = await supabase.auth.signInWithPassword({
+        email: email.trim(),
+        password
+      });
+
+      if (signInError) {
+        setError(signInError.message || 'Invalid email or password.');
+        return;
+      }
+
+      const signedInEmail = data.user?.email;
+      if (!signedInEmail) {
+        setError('Unable to read the signed-in user profile.');
+        return;
+      }
+
+      const role = roleFromSignedInUser(
+        signedInEmail,
+        data.user?.app_metadata?.role || data.user?.user_metadata?.role
+      );
+      onLogin?.({ email: signedInEmail, role });
+    } catch (authError) {
+      console.error('Supabase login error:', authError);
+      setError(authError instanceof Error ? authError.message : 'Login failed. Please try again.');
+    } finally {
+      setIsSubmitting(false);
     }
-
-    const user: CurrentUser = { email: account.email, role: account.role };
-    localStorage.setItem('lbl_currentUser', JSON.stringify(user));
-    onLogin(user);
   };
+
+  const canSubmit = email.trim().length > 0 && password.length > 0 && !isSubmitting;
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-charcoal via-[#080808] to-[#15120d] px-4 py-8 text-cream">
@@ -48,17 +71,17 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
               </div>
               <p className="mt-8 text-xs uppercase tracking-[0.35em] text-softGold">AutoFlow Secure Access</p>
               <h1 className="mt-4 max-w-xl text-5xl font-semibold leading-tight text-white">
-                Layer By Layer operations, protected for testing.
+                Layer By Layer operations, protected with Supabase Auth.
               </h1>
               <p className="mt-5 max-w-lg text-sm leading-7 text-slate-400">
-                Temporary local login for pre-production testing. Replace with Supabase Auth before full production launch.
+                Sign in with your authorized bakery operations account to continue.
               </p>
             </div>
             <div className="grid grid-cols-3 gap-3">
               {['Orders', 'Kitchen', 'Delivery'].map((item) => (
                 <div key={item} className="rounded-[24px] border border-white/10 bg-white/5 p-4">
                   <p className="text-xs uppercase tracking-[0.2em] text-softGold">{item}</p>
-                  <p className="mt-2 text-sm text-slate-300">Role protected</p>
+                  <p className="mt-2 text-sm text-slate-300">Auth protected</p>
                 </div>
               ))}
             </div>
@@ -115,16 +138,17 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
 
               <button
                 type="submit"
-                className="w-full rounded-[24px] bg-gold px-5 py-3 text-sm font-semibold text-charcoal transition hover:bg-softGold"
+                disabled={!canSubmit}
+                className="w-full rounded-[24px] bg-gold px-5 py-3 text-sm font-semibold text-charcoal transition hover:bg-softGold disabled:cursor-not-allowed disabled:opacity-60"
               >
-                Login
+                {isSubmitting ? 'Signing in...' : 'Login'}
               </button>
             </form>
 
             <div className="mt-8 rounded-[24px] border border-white/10 bg-[#141414] p-4 text-xs leading-6 text-slate-400">
-              <p className="font-semibold text-softGold">Testing accounts</p>
-              <p className="mt-2">Admin: paulyap0909@gmail.com</p>
-              <p>Sales: layerbylayermy@gmail.com</p>
+              <p className="font-semibold text-softGold">Supabase Auth required</p>
+              <p className="mt-2">Create staff accounts in Supabase Auth before enabling RLS.</p>
+              <p>Role is read from user metadata, with known LBL staff emails mapped safely as fallback.</p>
             </div>
           </section>
         </div>

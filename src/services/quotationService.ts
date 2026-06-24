@@ -1,4 +1,4 @@
-import { supabase } from '../lib/supabase';
+import { getActiveSupabaseSession, supabase } from '../lib/supabase';
 
 export type QuotationStatus = 'Draft' | 'Sent' | 'Viewed' | 'Negotiating' | 'Accepted' | 'Rejected';
 
@@ -97,6 +97,8 @@ const fromRow = (row: QuotationRow): Quotation => ({
 const quotationSelect = '*, sales_leads(company_name), quotation_items(*), quotation_history(*)';
 
 export async function loadQuotationsFromSupabase() {
+  await getActiveSupabaseSession();
+
   const { data, error } = await supabase
     .from('quotations')
     .select(quotationSelect)
@@ -110,6 +112,8 @@ export async function loadQuotationsFromSupabase() {
 }
 
 export async function generateQuotationNumber() {
+  await getActiveSupabaseSession();
+
   const { data, error } = await supabase.rpc('generate_quotation_number');
   if (error) {
     console.error('Failed to generate quotation number:', error);
@@ -122,6 +126,8 @@ export async function createQuotationInSupabase(
   quotation: Omit<Quotation, 'id' | 'quoteNo' | 'history' | 'createdAt' | 'updatedAt'>,
   performedBy: string
 ) {
+  await getActiveSupabaseSession();
+
   const quoteNo = await generateQuotationNumber();
   const { data, error } = await supabase
     .from('quotations')
@@ -166,6 +172,8 @@ export async function createQuotationInSupabase(
 }
 
 export async function loadQuotationById(quotationId: number | string) {
+  await getActiveSupabaseSession();
+
   const { data, error } = await supabase
     .from('quotations')
     .select(quotationSelect)
@@ -176,6 +184,8 @@ export async function loadQuotationById(quotationId: number | string) {
 }
 
 export async function addQuotationHistory(quotationId: number | string, action: string, description: string, performedBy: string) {
+  await getActiveSupabaseSession();
+
   const { error } = await supabase.from('quotation_history').insert({
     quotation_id: quotationId,
     action,
@@ -187,6 +197,8 @@ export async function addQuotationHistory(quotationId: number | string, action: 
 
 export async function updateQuotationStatusInSupabase(quotation: Quotation, status: QuotationStatus, performedBy: string) {
   if (!quotation.id) throw new Error('Quotation ID missing.');
+  await getActiveSupabaseSession();
+
   const { error } = await supabase
     .from('quotations')
     .update({ status, updated_at: new Date().toISOString() })

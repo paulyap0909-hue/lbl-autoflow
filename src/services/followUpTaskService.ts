@@ -1,4 +1,4 @@
-import { supabase } from '../lib/supabase';
+import { getActiveSupabaseSession, supabase } from '../lib/supabase';
 
 export type FollowUpTaskStatus = 'Pending' | 'Completed' | 'Overdue';
 
@@ -47,6 +47,8 @@ const fromRow = (row: FollowUpTaskRow): FollowUpTask => ({
 });
 
 export async function loadFollowUpTasksFromSupabase() {
+  await getActiveSupabaseSession();
+
   await supabase
     .from('follow_up_tasks')
     .update({ status: 'Overdue' })
@@ -57,6 +59,8 @@ export async function loadFollowUpTasksFromSupabase() {
 }
 
 export async function loadFollowUpTasksReadOnlyFromSupabase() {
+  await getActiveSupabaseSession();
+
   const { data, error } = await supabase
     .from('follow_up_tasks')
     .select('*, sales_leads(company_name)')
@@ -73,6 +77,7 @@ export async function loadFollowUpTasksReadOnlyFromSupabase() {
 export async function createFollowUpTaskInSupabase(task: FollowUpTask) {
   const leadId = Number(task.leadId);
   if (!Number.isFinite(leadId)) throw new Error('Lead ID missing.');
+  await getActiveSupabaseSession();
 
   const { data, error } = await supabase
     .from('follow_up_tasks')
@@ -96,6 +101,8 @@ export async function createFollowUpTaskInSupabase(task: FollowUpTask) {
 }
 
 export async function completeFollowUpTaskInSupabase(taskId: number | string) {
+  await getActiveSupabaseSession();
+
   const { data, error } = await supabase
     .from('follow_up_tasks')
     .update({ status: 'Completed' })

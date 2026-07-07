@@ -190,3 +190,428 @@ body {
   font-size: 14px;
   line-height: 1.5;
 }
+
+/* LBL Invoice Engine V2: dedicated A4 invoice document and print scope */
+.lbl-invoice-a4 {
+  width: min(100%, 900px);
+  margin: 0 auto;
+  padding: 52px 56px 34px;
+  background: #fffdf8;
+  color: #161616;
+  border-radius: 2px;
+  box-shadow: 0 22px 70px rgba(0, 0, 0, 0.28);
+  font-family: Georgia, 'Times New Roman', serif;
+}
+
+.lbl-invoice-a4 .invoice-head,
+.lbl-invoice-a4 .invoice-title-row,
+.lbl-invoice-a4 .bill-row,
+.lbl-invoice-a4 .invoice-bottom {
+  display: grid;
+  grid-template-columns: 1.15fr 0.85fr;
+  gap: 44px;
+}
+
+.lbl-invoice-a4 .company-block h1 {
+  margin: 0;
+  font-size: 25px;
+  font-weight: 500;
+  line-height: 1.18;
+  letter-spacing: 0.28em;
+  color: #080808;
+}
+
+.lbl-invoice-a4 .gold-rule {
+  width: 100%;
+  height: 1px;
+  margin: 14px 0 18px;
+  background: #b58a4b;
+}
+
+.lbl-invoice-a4 .info-line {
+  display: grid;
+  grid-template-columns: 22px 1fr;
+  gap: 11px;
+  align-items: start;
+  margin-top: 10px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-size: 13px;
+  line-height: 1.45;
+  color: #171717;
+}
+
+.lbl-invoice-a4 .info-line.compact {
+  margin-top: 9px;
+}
+
+.lbl-invoice-a4 .info-line span {
+  color: #0e0e0e;
+  transform: translateY(2px);
+}
+
+.lbl-invoice-a4 .info-line p {
+  margin: 0;
+}
+
+.lbl-invoice-a4 .brand-mark {
+  text-align: right;
+  color: #090909;
+}
+
+.lbl-invoice-a4 .monogram {
+  font-family: Georgia, 'Times New Roman', serif;
+  font-size: 70px;
+  font-weight: 600;
+  line-height: 0.9;
+  letter-spacing: -0.18em;
+}
+
+.lbl-invoice-a4 .brand-mark p {
+  margin: 14px 0 0;
+  font-size: 17px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.lbl-invoice-a4 .invoice-title-row {
+  align-items: end;
+  margin-top: 62px;
+}
+
+.lbl-invoice-a4 .invoice-title-row h2 {
+  margin: 0;
+  font-size: 55px;
+  font-weight: 400;
+  letter-spacing: 0.28em;
+  color: #060606;
+}
+
+.lbl-invoice-a4 .title-rule,
+.lbl-invoice-a4 .small-rule {
+  width: 64px;
+  height: 2px;
+  margin-top: 16px;
+  background: #b58a4b;
+}
+
+.lbl-invoice-a4 .invoice-meta {
+  margin: 0;
+  padding-left: 26px;
+  border-left: 1px solid #b58a4b;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+.lbl-invoice-a4 .invoice-meta div {
+  display: grid;
+  grid-template-columns: 150px 1fr;
+  gap: 20px;
+  margin: 0 0 16px;
+}
+
+.lbl-invoice-a4 .invoice-meta dt {
+  text-transform: uppercase;
+  letter-spacing: 0.22em;
+  color: #111;
+}
+
+.lbl-invoice-a4 .invoice-meta dd {
+  margin: 0;
+  color: #111;
+}
+
+.lbl-invoice-a4 .bill-row {
+  align-items: stretch;
+  margin-top: 40px;
+}
+
+.lbl-invoice-a4 .bill-card,
+.lbl-invoice-a4 .fulfillment-card,
+.lbl-invoice-a4 .payment-box {
+  border-radius: 10px;
+  background: linear-gradient(135deg, rgba(181, 138, 75, 0.12), rgba(255, 255, 255, 0.38));
+  padding: 22px 24px;
+}
+
+.lbl-invoice-a4 .section-label {
+  margin: 0 0 10px;
+  color: #a97937;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+}
+
+.lbl-invoice-a4 .bill-card h3 {
+  margin: 0 0 12px;
+  font-size: 24px;
+  font-weight: 400;
+}
+
+.lbl-invoice-a4 .mini-grid {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  row-gap: 10px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-size: 13px;
+}
+
+.lbl-invoice-a4 .mini-grid span {
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: #8a7a67;
+}
+
+.lbl-invoice-a4 .mini-grid strong {
+  font-weight: 600;
+  color: #111;
+}
+
+.lbl-invoice-a4 .invoice-items {
+  margin-top: 36px;
+  border-top: 1px solid #b58a4b;
+  border-bottom: 1px solid #b58a4b;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+.lbl-invoice-a4 .items-header,
+.lbl-invoice-a4 .items-row {
+  display: grid;
+  grid-template-columns: 70px minmax(220px, 1fr) 110px 150px 130px;
+  gap: 12px;
+  align-items: center;
+}
+
+.lbl-invoice-a4 .items-header {
+  padding: 18px 8px;
+  color: #111;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.lbl-invoice-a4 .items-row {
+  min-height: 45px;
+  padding: 10px 8px;
+  border-top: 1px dotted #dccbb1;
+  color: #1d1d1d;
+  font-size: 14px;
+}
+
+.lbl-invoice-a4 .items-row:first-of-type {
+  border-top: 1px solid #b58a4b;
+}
+
+.lbl-invoice-a4 .items-header span:nth-child(n+3),
+.lbl-invoice-a4 .items-row span:nth-child(n+3) {
+  text-align: right;
+}
+
+.lbl-invoice-a4 .invoice-bottom {
+  margin-top: 36px;
+  align-items: start;
+}
+
+.lbl-invoice-a4 .notes-block {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-size: 15px;
+  line-height: 1.6;
+}
+
+.lbl-invoice-a4 .notes-block p {
+  margin: 0 0 16px;
+}
+
+.lbl-invoice-a4 .script-line {
+  color: #a97937;
+  font-family: Georgia, 'Times New Roman', serif;
+  font-size: 22px;
+  font-style: italic;
+}
+
+.lbl-invoice-a4 .totals-block {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+.lbl-invoice-a4 .totals-line,
+.lbl-invoice-a4 .totals-main {
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 10px 0;
+  border-bottom: 1px solid #b58a4b;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+}
+
+.lbl-invoice-a4 .totals-main {
+  margin-top: 8px;
+  align-items: baseline;
+  border-top: 1px solid #b58a4b;
+  border-bottom: 0;
+  font-size: 25px;
+}
+
+.lbl-invoice-a4 .totals-main strong {
+  font-size: 28px;
+  letter-spacing: 0.04em;
+}
+
+.lbl-invoice-a4 .payment-box {
+  display: flex;
+  gap: 18px;
+  align-items: center;
+  margin-top: 24px;
+}
+
+.lbl-invoice-a4 .bank-icon {
+  display: flex;
+  width: 54px;
+  height: 54px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #111;
+  border-radius: 999px;
+}
+
+.lbl-invoice-a4 .payment-box p,
+.lbl-invoice-a4 .payment-box h4 {
+  margin: 4px 0;
+}
+
+.lbl-invoice-a4 .payment-box h4 {
+  font-size: 19px;
+  letter-spacing: 0.12em;
+}
+
+.lbl-invoice-a4 .invoice-footer {
+  margin-top: 34px;
+  padding-top: 18px;
+  border-top: 1px solid #b58a4b;
+  text-align: center;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+.lbl-invoice-a4 .invoice-footer p {
+  margin: 0;
+  font-size: 12px;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+}
+
+.lbl-invoice-a4 .invoice-footer span {
+  margin: 0 14px;
+}
+
+.lbl-invoice-a4 .invoice-footer strong {
+  display: block;
+  margin-top: 14px;
+  color: #a97937;
+  font-family: Georgia, 'Times New Roman', serif;
+  font-size: 18px;
+  font-style: italic;
+  font-weight: 400;
+}
+
+.lbl-invoice-a4 .footer-heart {
+  display: block;
+  margin-top: 8px !important;
+  color: #a97937;
+}
+
+@media (max-width: 900px) {
+  .lbl-invoice-a4 {
+    padding: 32px 24px;
+  }
+  .lbl-invoice-a4 .invoice-head,
+  .lbl-invoice-a4 .invoice-title-row,
+  .lbl-invoice-a4 .bill-row,
+  .lbl-invoice-a4 .invoice-bottom {
+    grid-template-columns: 1fr;
+    gap: 24px;
+  }
+  .lbl-invoice-a4 .brand-mark,
+  .lbl-invoice-a4 .items-header span:nth-child(n+3),
+  .lbl-invoice-a4 .items-row span:nth-child(n+3) {
+    text-align: left;
+  }
+  .lbl-invoice-a4 .items-header,
+  .lbl-invoice-a4 .items-row {
+    grid-template-columns: 45px 1fr;
+  }
+  .lbl-invoice-a4 .items-header span:nth-child(n+3),
+  .lbl-invoice-a4 .items-row span:nth-child(n+3) {
+    grid-column: 2;
+  }
+}
+
+@page {
+  size: A4 portrait;
+  margin: 0;
+}
+
+@media print {
+  html,
+  body,
+  #root {
+    width: 210mm;
+    min-height: 297mm;
+    background: #ffffff !important;
+  }
+
+  body.printing-lbl-invoice * {
+    visibility: hidden !important;
+  }
+
+  body.printing-lbl-invoice .lbl-print-scope,
+  body.printing-lbl-invoice .lbl-print-scope * {
+    visibility: visible !important;
+  }
+
+  body.printing-lbl-invoice .lbl-print-scope {
+    position: absolute !important;
+    inset: 0 auto auto 0 !important;
+    width: 210mm !important;
+    min-height: 297mm !important;
+    margin: 0 !important;
+    padding: 16mm 18mm 10mm !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    background: #fffdf8 !important;
+    color: #161616 !important;
+  }
+
+  body.printing-lbl-invoice .lbl-invoice-screen-toolbar,
+  body.printing-lbl-invoice .fixed,
+  body.printing-lbl-invoice button:not(.lbl-print-scope button) {
+    display: none !important;
+  }
+
+  .lbl-invoice-a4 .company-block h1 {
+    font-size: 20px;
+  }
+
+  .lbl-invoice-a4 .monogram {
+    font-size: 54px;
+  }
+
+  .lbl-invoice-a4 .invoice-title-row {
+    margin-top: 34px;
+  }
+
+  .lbl-invoice-a4 .invoice-title-row h2 {
+    font-size: 44px;
+  }
+
+  .lbl-invoice-a4 .items-header,
+  .lbl-invoice-a4 .items-row {
+    grid-template-columns: 48px minmax(190px, 1fr) 80px 115px 110px;
+  }
+
+  .lbl-invoice-a4 .invoice-footer {
+    page-break-inside: avoid;
+  }
+}

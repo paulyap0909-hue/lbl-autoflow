@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { BadgeCheck, Building2, Download, Mail, MapPin, Phone, Printer, Send } from 'lucide-react';
 import type { Order } from '../data/mockData';
 import Toast from './Toast';
 import { formatRM, toSafeNumber } from '../utils/pricing';
@@ -11,20 +12,94 @@ type InvoiceTemplateProps = {
   showChrome?: boolean;
 };
 
-const formatCurrency = formatRM;
-
 type InvoiceItem = {
-  product: string;
-  flavour: string;
+  description: string;
   quantity: number;
   unitPrice: number;
 };
 
+const COMPANY = {
+  name: 'Layer By Layer Bakery',
+  address: '11-2, Jalan Cecawi 6/19B, Kota Damansara, 47810 Petaling Jaya, Selangor',
+  phone: '019-4937139',
+  email: 'layerbylayermy@gmail.com',
+  ssm: 'RA0128892-A',
+  bankName: 'Maybank',
+  bankAccount: '5145 8954 8255',
+  bankHolder: 'Layer By Layer Bakery'
+};
+
+const formatCurrency = formatRM;
+
+const textOf = (...values: unknown[]) => {
+  for (const value of values) {
+    if (value === null || value === undefined) continue;
+    const text = String(value).trim();
+    if (text && text !== 'null' && text !== 'undefined') return text;
+  }
+  return '';
+};
+
+const dateOf = (...values: unknown[]) => {
+  const raw = textOf(...values);
+  if (!raw) return new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'long', year: 'numeric' });
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return raw;
+  return parsed.toLocaleDateString('en-GB', { day: '2-digit', month: 'long', year: 'numeric' });
+};
+
 const getStatusColor = (status: string) => {
-  if (status === 'Paid') return 'bg-emerald-500/10 text-emerald-200 border-emerald-500/20';
-  if (status === 'Pending') return 'bg-amber-500/10 text-amber-200 border-amber-500/20';
-  if (status === 'Overdue') return 'bg-rose-500/10 text-rose-200 border-rose-500/20';
-  return 'bg-white/5 text-slate-300 border-white/10';
+  const normalised = status.toLowerCase();
+  if (normalised.includes('paid')) return 'border-emerald-500/25 bg-emerald-500/10 text-emerald-200';
+  if (normalised.includes('pending')) return 'border-amber-500/25 bg-amber-500/10 text-amber-200';
+  if (normalised.includes('overdue')) return 'border-rose-500/25 bg-rose-500/10 text-rose-200';
+  return 'border-white/10 bg-white/5 text-slate-300';
+};
+
+const splitEvenly = (quantity: number, count: number) => {
+  if (!count) return [];
+  const base = Math.floor(quantity / count);
+  const remainder = quantity % count;
+  return Array.from({ length: count }, (_, index) => base + (index < remainder ? 1 : 0));
+};
+
+const buildItems = (
+  rawItems: unknown,
+  rawFlavours: unknown,
+  fallbackProduct: string,
+  quantity: number,
+  unitPrice: number
+): InvoiceItem[] => {
+  if (Array.isArray(rawItems) && rawItems.length) {
+    return rawItems.map((item) => {
+      const record = (item ?? {}) as Record<string, unknown>;
+      const description = textOf(
+        record.description,
+        record.name,
+        record.flavour,
+        record.flavor,
+        record.product_name,
+        record.product,
+        fallbackProduct
+      );
+      return {
+        description,
+        quantity: Math.max(1, toSafeNumber(record.quantity ?? record.qty ?? 1)),
+        unitPrice: toSafeNumber(record.unitPrice ?? record.unit_price ?? record.price ?? unitPrice)
+      };
+    });
+  }
+
+  if (Array.isArray(rawFlavours) && rawFlavours.length) {
+    const amounts = splitEvenly(Math.max(1, quantity), rawFlavours.length);
+    return rawFlavours.map((flavour, index) => ({
+      description: textOf(flavour, fallbackProduct),
+      quantity: Math.max(1, amounts[index] ?? 1),
+      unitPrice
+    }));
+  }
+
+  return [{ description: fallbackProduct, quantity: Math.max(1, quantity), unitPrice }];
 };
 
 export default function InvoiceTemplate({ invoice, order, onMarkPaid, previewMode = 'full', showChrome = true }: InvoiceTemplateProps) {
@@ -32,85 +107,92 @@ export default function InvoiceTemplate({ invoice, order, onMarkPaid, previewMod
   const safeInvoice = (invoice ?? {}) as Record<string, unknown>;
   const safeOrder = (order ?? {}) as Record<string, unknown>;
 
-  const paymentStatus =
-    String(
-      safeInvoice.paymentStatus ??
-      safeInvoice.payment_status ??
-      safeInvoice.status ??
-      safeOrder.paymentStatus ??
-      safeOrder.payment_status ??
-      'Pending'
-    );
+  const paymentStatus = textOf(
+    safeInvoice.paymentStatus,
+    safeInvoice.payment_status,
+    safeInvoice.status,
+    safeOrder.paymentStatus,
+    safeOrder.payment_status,
+    'Pending'
+  );
 
-  const orderRef = String(
-    safeInvoice.orderNo ??
-    safeInvoice.order_no ??
-    safeOrder.orderNo ??
-    safeOrder.order_no ??
-    safeInvoice.orderId ??
-    safeInvoice.order_id ??
-    safeOrder.orderId ??
-    safeOrder.order_id ??
-    safeOrder.id ??
-    ''
+  const orderStatus = textOf(
+    safeInvoice.orderStatus,
+    safeInvoice.order_status,
+    safeInvoice.kitchenStatus,
+    safeInvoice.kitchen_status,
+    safeOrder.orderStatus,
+    safeOrder.order_status,
+    safeOrder.kitchenStatus,
+    safeOrder.kitchen_status,
+    safeOrder.status,
+    'New'
   );
-  const invoiceNumber = String(
-    safeInvoice.invoiceNumber ??
-    safeInvoice.invoice_no ??
-    safeInvoice.invoiceNo ??
-    ''
+
+  const orderRef = textOf(
+    safeInvoice.orderNo,
+    safeInvoice.order_no,
+    safeOrder.orderNo,
+    safeOrder.order_no,
+    safeInvoice.orderId,
+    safeInvoice.order_id,
+    safeOrder.orderId,
+    safeOrder.order_id,
+    safeOrder.id
   );
-  const customerName = String(safeInvoice.customerName ?? safeInvoice.customer_name ?? safeOrder.customerName ?? safeOrder.customer_name ?? '');
-  const phone = String(safeInvoice.phone ?? safeOrder.phone ?? '');
-  const address = String(safeInvoice.address ?? safeOrder.address ?? '');
-  const deliveryDate = String(safeInvoice.deliveryDate ?? safeInvoice.delivery_date ?? safeOrder.deliveryDate ?? safeOrder.delivery_date ?? '');
-  const deliveryTime = String(safeInvoice.deliveryTime ?? safeInvoice.delivery_time ?? safeOrder.deliveryTime ?? safeOrder.delivery_time ?? '');
+
+  const invoiceNumber = textOf(
+    safeInvoice.invoiceNumber,
+    safeInvoice.invoice_no,
+    safeInvoice.invoiceNo,
+    orderRef ? orderRef.replace(/^LBL-/, 'INV-') : ''
+  );
+
+  const customerName = textOf(safeInvoice.customerName, safeInvoice.customer_name, safeOrder.customerName, safeOrder.customer_name, 'Customer');
+  const phone = textOf(safeInvoice.phone, safeOrder.phone, '-');
+  const email = textOf(safeInvoice.email, safeOrder.email, '-');
+  const address = textOf(safeInvoice.address, safeOrder.address, '-');
+  const deliveryDate = textOf(safeInvoice.deliveryDate, safeInvoice.delivery_date, safeOrder.deliveryDate, safeOrder.delivery_date);
+  const deliveryTime = textOf(safeInvoice.deliveryTime, safeInvoice.delivery_time, safeOrder.deliveryTime, safeOrder.delivery_time);
+  const invoiceDate = dateOf(safeInvoice.invoiceDate, safeInvoice.invoice_date, safeInvoice.created_at, safeOrder.created_at, deliveryDate);
+
   const subtotal = toSafeNumber(safeInvoice.subtotal ?? safeOrder.subtotal);
   const deliveryFee = toSafeNumber(safeInvoice.deliveryFee ?? safeInvoice.delivery_fee ?? safeOrder.deliveryFee ?? safeOrder.delivery_fee);
   const totalAmount = toSafeNumber(safeInvoice.totalAmount ?? safeInvoice.total ?? safeInvoice.amount ?? safeOrder.totalAmount ?? safeOrder.total);
-  const product = String(safeInvoice.product ?? safeOrder.product ?? 'Bakery order');
-  const quantity = toSafeNumber(safeInvoice.quantity ?? safeOrder.quantity ?? 1);
-  const unitPrice = toSafeNumber(safeInvoice.unitPrice ?? safeInvoice.unit_price ?? safeOrder.unitPrice ?? safeOrder.unit_price ?? (subtotal || totalAmount - deliveryFee));
-  const originalUnitPrice = toSafeNumber(safeInvoice.originalUnitPrice ?? safeInvoice.original_unit_price ?? safeOrder.originalUnitPrice ?? safeOrder.original_unit_price ?? unitPrice);
-  const finalUnitPrice = toSafeNumber(safeInvoice.finalUnitPrice ?? safeInvoice.final_unit_price ?? safeOrder.finalUnitPrice ?? safeOrder.final_unit_price ?? unitPrice);
-  const originalSubtotal = toSafeNumber(safeInvoice.originalSubtotal ?? safeInvoice.original_subtotal ?? safeOrder.originalSubtotal ?? safeOrder.original_subtotal ?? originalUnitPrice * quantity);
   const discountAmount = toSafeNumber(safeInvoice.discountAmount ?? safeInvoice.discount_amount ?? safeOrder.discountAmount ?? safeOrder.discount_amount);
-  const discountReason = String(safeInvoice.discountReason ?? safeInvoice.discount_reason ?? safeOrder.discountReason ?? safeOrder.discount_reason ?? '');
-  const finalSubtotal = toSafeNumber(safeInvoice.finalSubtotal ?? safeInvoice.final_subtotal ?? safeOrder.finalSubtotal ?? safeOrder.final_subtotal ?? Math.max(originalSubtotal - discountAmount, 0));
-  const kitchenStatus = String(safeInvoice.kitchenStatus ?? safeInvoice.kitchen_status ?? safeOrder.kitchenStatus ?? safeOrder.kitchen_status ?? 'New');
+  const product = textOf(safeInvoice.product, safeOrder.product, 'Bakery Order');
+  const quantity = Math.max(1, toSafeNumber(safeInvoice.quantity ?? safeOrder.quantity ?? 1));
+  const rawUnitPrice = toSafeNumber(safeInvoice.finalUnitPrice ?? safeInvoice.final_unit_price ?? safeInvoice.unitPrice ?? safeInvoice.unit_price ?? safeOrder.finalUnitPrice ?? safeOrder.final_unit_price ?? safeOrder.unitPrice ?? safeOrder.unit_price);
+  const fallbackUnitPrice = rawUnitPrice || (subtotal ? subtotal / quantity : totalAmount ? Math.max(totalAmount - deliveryFee, 0) / quantity : 0);
+
   const rawItems = safeInvoice.items ?? safeInvoice.order_items ?? safeOrder.items ?? safeOrder.order_items;
   const rawFlavours = safeInvoice.flavours ?? safeOrder.flavours;
-  const flavours = Array.isArray(rawFlavours) ? rawFlavours.map(String) : [];
-  const items: InvoiceItem[] = Array.isArray(rawItems)
-    ? rawItems.map((item) => {
-        const record = item as Record<string, unknown>;
-        return {
-          product: String(record.product ?? product),
-          flavour: String(record.flavour ?? record.flavor ?? ''),
-          quantity: toSafeNumber(record.quantity ?? 1),
-          unitPrice: toSafeNumber(record.unitPrice ?? record.unit_price ?? finalUnitPrice)
-        };
-      })
-    : flavours.length
-      ? flavours.map((flavour) => ({ product, flavour, quantity: Math.max(1, Math.round(quantity / flavours.length)), unitPrice: finalUnitPrice }))
-      : [{ product, flavour: product, quantity: Math.max(1, quantity), unitPrice: finalUnitPrice }];
+  const items = buildItems(rawItems, rawFlavours, product, quantity, fallbackUnitPrice);
+
   const calculatedSubtotal = items.reduce((sum, item) => sum + item.quantity * item.unitPrice, 0);
-  const displaySubtotal = finalSubtotal || subtotal || calculatedSubtotal;
-  const displayTotal = totalAmount || displaySubtotal + deliveryFee;
+  const displaySubtotal = subtotal || calculatedSubtotal;
+  const displayDiscount = discountAmount;
+  const displayTotal = totalAmount || Math.max(displaySubtotal - displayDiscount, 0) + deliveryFee;
   const hasInvoiceData = Boolean(invoiceNumber || orderRef || customerName);
 
-  const invoiceDate = new Date().toLocaleDateString('en-GB', {
-    day: '2-digit',
-    month: 'short',
-    year: 'numeric'
-  });
+  const preparePrint = () => {
+    document.body.classList.add('printing-lbl-invoice');
+    const cleanup = () => {
+      document.body.classList.remove('printing-lbl-invoice');
+      window.removeEventListener('afterprint', cleanup);
+    };
+    window.addEventListener('afterprint', cleanup);
+    window.setTimeout(cleanup, 1200);
+  };
 
   const handleDownloadPdf = () => {
+    preparePrint();
     window.print();
-    setToast({ message: 'PDF export initiated. Browser print dialog will open.', type: 'success' });
+    setToast({ message: 'PDF export ready. Choose “Save as PDF” in the print dialog.', type: 'success' });
   };
 
   const handlePrint = () => {
+    preparePrint();
     window.print();
     setToast({ message: 'Print dialog opened.', type: 'success' });
   };
@@ -129,16 +211,6 @@ export default function InvoiceTemplate({ invoice, order, onMarkPaid, previewMod
     setToast({ message: 'WhatsApp message prepared. Future integration will send the invoice.', type: 'info' });
   };
 
-  const handleCopyLink = () => {
-    const invoiceLink = `${window.location.origin}?invoice=${orderRef || invoiceNumber}`;
-    navigator.clipboard.writeText(invoiceLink);
-    setToast({ message: 'Invoice link copied to clipboard!', type: 'success' });
-  };
-
-  const invoiceStatus = paymentStatus === 'Paid' ? 'Paid' : 'Pending';
-  const isOverdue = deliveryDate ? new Date(deliveryDate) < new Date() : false;
-  const displayStatus = isOverdue && paymentStatus !== 'Paid' ? 'Overdue' : invoiceStatus;
-
   if (!hasInvoiceData) {
     return (
       <div className="rounded-[32px] border border-white/10 bg-[#0f0f0f] p-8 text-center shadow-panel">
@@ -152,86 +224,33 @@ export default function InvoiceTemplate({ invoice, order, onMarkPaid, previewMod
   if (previewMode === 'compact') {
     return (
       <div className="relative space-y-4">
-        {toast && (
-          <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />
-        )}
-
+        {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
         <div className="rounded-[20px] border border-[#334155] bg-[#111111] p-4 shadow-panel">
           <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
             <div>
               <p className="text-xs uppercase tracking-[0.2em] text-softGold">Quick Actions</p>
               <h4 className="mt-1 text-base font-semibold text-white">Invoice Toolbar</h4>
             </div>
-            <div className="flex flex-wrap gap-2">
-              <button
-                onClick={handleDownloadPdf}
-                className="rounded-full bg-gold px-4 py-2 text-xs font-semibold text-charcoal transition hover:bg-[#b9985f]"
-              >
-                Download PDF
-              </button>
-              <button
-                onClick={handlePrint}
-                className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-xs text-white transition hover:bg-white/10"
-              >
-                Print
-              </button>
-              <button
-                onClick={handleMarkPaid}
-                disabled={paymentStatus === 'Paid'}
-                className="rounded-full border border-emerald-500/20 bg-emerald-500/10 px-4 py-2 text-xs text-emerald-200 transition hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {paymentStatus === 'Paid' ? 'Paid' : 'Mark as Paid'}
-              </button>
-              <button
-                onClick={handleSendWhatsApp}
-                className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-xs text-white transition hover:bg-white/10"
-              >
-                WhatsApp
-              </button>
-              <button
-                onClick={handleCopyLink}
-                className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-xs text-white transition hover:bg-white/10"
-              >
-                Copy Link
-              </button>
-            </div>
+            <InvoiceActions
+              paymentStatus={paymentStatus}
+              onDownload={handleDownloadPdf}
+              onPrint={handlePrint}
+              onWhatsApp={handleSendWhatsApp}
+              onMarkPaid={handleMarkPaid}
+            />
           </div>
         </div>
-
         <div className="rounded-[20px] border border-[#334155] bg-[#111111] p-4 shadow-panel">
           <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
             <div className="min-w-0">
               <p className="text-xs uppercase tracking-[0.18em] text-softGold">Compact Invoice Preview</p>
-              <h3 className="mt-2 truncate text-xl font-semibold text-white">{invoiceNumber || 'Invoice'}</h3>
-              <p className="mt-1 truncate text-sm text-slate-400">{customerName || 'Customer'}</p>
+              <h3 className="mt-2 truncate text-xl font-semibold text-white">{invoiceNumber}</h3>
+              <p className="mt-1 truncate text-sm text-slate-400">{customerName}</p>
               <p className="mt-1 truncate text-xs text-slate-500">Order Ref: {orderRef || '-'}</p>
             </div>
             <div className="shrink-0 rounded-[18px] border border-[#C8A96B]/30 bg-[#C8A96B]/10 px-4 py-3 text-left md:text-right">
               <p className="text-[11px] uppercase tracking-[0.16em] text-[#E4C98E]">Amount</p>
               <p className="mt-1 text-2xl font-semibold text-white">{formatCurrency(displayTotal)}</p>
-            </div>
-          </div>
-
-          <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-            <div className="rounded-[16px] border border-[#334155] bg-[#0F172A] p-3">
-              <p className="text-[11px] uppercase tracking-[0.14em] text-slate-500">Invoice Status</p>
-              <div className={`mt-2 inline-flex rounded-full border px-3 py-1 text-xs font-semibold ${getStatusColor(displayStatus)}`}>
-                {displayStatus}
-              </div>
-            </div>
-            <div className="rounded-[16px] border border-[#334155] bg-[#0F172A] p-3">
-              <p className="text-[11px] uppercase tracking-[0.14em] text-slate-500">Payment Status</p>
-              <div className={`mt-2 inline-flex rounded-full border px-3 py-1 text-xs font-semibold ${getStatusColor(paymentStatus)}`}>
-                {paymentStatus}
-              </div>
-            </div>
-            <div className="rounded-[16px] border border-[#334155] bg-[#0F172A] p-3">
-              <p className="text-[11px] uppercase tracking-[0.14em] text-slate-500">Delivery Date</p>
-              <p className="mt-2 truncate text-sm font-semibold text-white">{deliveryDate || '-'}</p>
-            </div>
-            <div className="rounded-[16px] border border-[#334155] bg-[#0F172A] p-3">
-              <p className="text-[11px] uppercase tracking-[0.14em] text-slate-500">Delivery Time</p>
-              <p className="mt-2 truncate text-sm font-semibold text-white">{deliveryTime || '-'}</p>
             </div>
           </div>
         </div>
@@ -240,206 +259,181 @@ export default function InvoiceTemplate({ invoice, order, onMarkPaid, previewMod
   }
 
   return (
-    <div className="relative">
-      {toast && (
-        <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />
+    <div className="relative lbl-invoice-template">
+      {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
+
+      {showChrome && (
+        <div className="lbl-invoice-screen-toolbar sticky top-0 z-40 mb-4 rounded-[20px] border border-[#334155] bg-[#111111]/95 p-4 backdrop-blur-sm shadow-panel">
+          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <div>
+              <p className="text-xs uppercase tracking-[0.2em] text-softGold">Invoice Actions</p>
+              <h4 className="mt-1 text-base font-semibold text-white">Professional A4 Invoice</h4>
+            </div>
+            <InvoiceActions
+              paymentStatus={paymentStatus}
+              onDownload={handleDownloadPdf}
+              onPrint={handlePrint}
+              onWhatsApp={handleSendWhatsApp}
+              onMarkPaid={handleMarkPaid}
+            />
+          </div>
+        </div>
       )}
 
-      {/* Sticky Action Toolbar */}
-      {showChrome && <div className="sticky top-0 z-40 mb-4 rounded-[20px] border border-[#334155] bg-[#111111]/95 p-4 backdrop-blur-sm shadow-panel">
-        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+      <article className="lbl-invoice-a4 lbl-print-scope">
+        <header className="invoice-head">
+          <section className="company-block">
+            <h1>{COMPANY.name.toUpperCase()}</h1>
+            <div className="gold-rule" />
+            <InfoLine icon={<MapPin size={15} />} text={COMPANY.address} />
+            <InfoLine icon={<Phone size={15} />} text={COMPANY.phone} />
+            <InfoLine icon={<Mail size={15} />} text={COMPANY.email} />
+            <InfoLine icon={<BadgeCheck size={15} />} text={`SSM Registration No: ${COMPANY.ssm}`} />
+          </section>
+          <section className="brand-mark" aria-label="Layer By Layer logo">
+            <div className="monogram">LBL</div>
+            <p>Layer By Layer</p>
+          </section>
+        </header>
+
+        <section className="invoice-title-row">
           <div>
-            <p className="text-xs uppercase tracking-[0.2em] text-softGold">Quick Actions</p>
-            <h4 className="mt-1 text-base font-semibold text-white">Invoice Toolbar</h4>
+            <h2>INVOICE</h2>
+            <div className="title-rule" />
           </div>
-          <div className="flex flex-wrap gap-2">
-            <button
-              onClick={handleDownloadPdf}
-              className="rounded-full bg-gold px-4 py-2 text-xs font-semibold text-charcoal transition hover:bg-[#b9985f]"
-            >
-              Download PDF
-            </button>
-            <button
-              onClick={handlePrint}
-              className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-xs text-white transition hover:bg-white/10"
-            >
-              Print
-            </button>
-            <button
-              onClick={handleMarkPaid}
-              disabled={paymentStatus === 'Paid'}
-              className="rounded-full border border-emerald-500/20 bg-emerald-500/10 px-4 py-2 text-xs text-emerald-200 transition hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {paymentStatus === 'Paid' ? 'Paid' : 'Mark as Paid'}
-            </button>
-            <button
-              onClick={handleSendWhatsApp}
-              className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-xs text-white transition hover:bg-white/10"
-            >
-              WhatsApp
-            </button>
-            <button
-              onClick={handleCopyLink}
-              className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-xs text-white transition hover:bg-white/10"
-            >
-              Copy Link
-            </button>
-          </div>
-        </div>
-      </div>}
-
-      {/* Invoice Summary Section */}
-      {showChrome && <div className="mb-4 grid gap-3 md:grid-cols-3">
-        <div className="rounded-[18px] border border-white/10 bg-[#111111] p-4">
-          <p className="text-[11px] uppercase tracking-[0.18em] text-slate-400">Invoice Status</p>
-          <div className={`mt-2 inline-flex rounded-full border px-3 py-1 text-xs font-semibold ${getStatusColor(displayStatus)}`}>
-            {displayStatus}
-          </div>
-        </div>
-        <div className="rounded-[18px] border border-white/10 bg-[#111111] p-4">
-          <p className="text-[11px] uppercase tracking-[0.18em] text-slate-400">Payment Status</p>
-          <div className={`mt-2 inline-flex rounded-full border px-3 py-1 text-xs font-semibold ${getStatusColor(paymentStatus)}`}>
-            {paymentStatus}
-          </div>
-        </div>
-        <div className="rounded-[18px] border border-white/10 bg-[#111111] p-4">
-          <p className="text-[11px] uppercase tracking-[0.18em] text-slate-400">Order Status</p>
-          <div className="mt-2 inline-flex rounded-full border border-indigo-500/20 bg-indigo-500/10 px-3 py-1 text-xs font-semibold text-indigo-200">
-            {kitchenStatus}
-          </div>
-        </div>
-      </div>}
-      {/* Main Invoice Document */}
-      <div className="rounded-[24px] border border-white/10 bg-[#0f0f0f] p-5 text-slate-300 shadow-panel">
-        <div className="mb-6 flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
-          <div className="space-y-2">
-            <div className="inline-flex rounded-full bg-gold px-3 py-1.5 text-xs font-semibold text-charcoal">LBL INVOICE</div>
+          <dl className="invoice-meta">
             <div>
-              <h1 className="text-3xl font-semibold text-cream">Layer By Layer</h1>
-              <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-400">Premium bakery invoice for clients, deliveries and accounting.</p>
+              <dt>Invoice No.</dt>
+              <dd>{invoiceNumber}</dd>
             </div>
-          </div>
-          <div className="rounded-[20px] border border-white/10 bg-[#111111] p-4 text-sm text-slate-300">
-            <p className="text-xs uppercase tracking-[0.18em] text-softGold">Invoice No</p>
-            <p className="mt-2 text-xl font-semibold text-white">{invoiceNumber}</p>
-            <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
-              <div>
-                <p className="text-xs uppercase tracking-[0.16em] text-slate-400">Invoice Date</p>
-                <p className="mt-1 text-white">{invoiceDate}</p>
-              </div>
-              <div>
-                <p className="text-xs uppercase tracking-[0.16em] text-slate-400">Order Ref</p>
-                <p className="mt-1 text-white">{orderRef}</p>
-              </div>
+            <div>
+              <dt>Invoice Date</dt>
+              <dd>{invoiceDate}</dd>
             </div>
-          </div>
-        </div>
+            <div>
+              <dt>Currency</dt>
+              <dd>MYR</dd>
+            </div>
+            {orderRef && (
+              <div>
+                <dt>Order Ref.</dt>
+                <dd>{orderRef}</dd>
+              </div>
+            )}
+          </dl>
+        </section>
 
-        <div className="grid gap-4 lg:grid-cols-[1fr_1fr]">
-          <div className="rounded-[20px] border border-white/10 bg-[#111111] p-4">
-            <p className="text-xs uppercase tracking-[0.18em] text-softGold">Bill To</p>
-            <p className="mt-3 text-lg font-semibold text-white">{customerName || 'Customer'}</p>
-            <p className="mt-2 text-sm text-slate-400">{phone || '-'}</p>
-            <p className="mt-2 text-sm leading-6 text-slate-400">{address || '-'}</p>
+        <section className="bill-row">
+          <div className="bill-card">
+            <p className="section-label">Bill To</p>
+            <h3>{customerName}</h3>
+            <InfoLine icon={<Phone size={15} />} text={phone} compact />
+            <InfoLine icon={<Mail size={15} />} text={email} compact />
+            {address && address !== '-' ? <InfoLine icon={<MapPin size={15} />} text={address} compact /> : null}
           </div>
-          <div className="rounded-[20px] border border-white/10 bg-[#111111] p-4">
-            <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-1">
-              <div>
-                <p className="text-xs uppercase tracking-[0.18em] text-softGold">Delivery Date</p>
-                <p className="mt-2 text-white">{deliveryDate || '-'}</p>
-              </div>
-              <div>
-                <p className="text-xs uppercase tracking-[0.18em] text-softGold">Delivery Time</p>
-                <p className="mt-2 text-white">{deliveryTime || '-'}</p>
-              </div>
-              <div>
-                <p className="text-xs uppercase tracking-[0.18em] text-softGold">Payment Status</p>
-                <p className="mt-2 text-white">{paymentStatus}</p>
-              </div>
+          <div className="fulfillment-card">
+            <p className="section-label">Fulfilment</p>
+            <div className="mini-grid">
+              <span>Date</span><strong>{deliveryDate || '-'}</strong>
+              <span>Time</span><strong>{deliveryTime || '-'}</strong>
+              <span>Payment</span><strong>{paymentStatus}</strong>
+              <span>Status</span><strong>{orderStatus}</strong>
             </div>
           </div>
-        </div>
+        </section>
 
-        <div className="mt-5 overflow-hidden rounded-[20px] border border-white/10 bg-[#121212]">
-          <div className="grid gap-3 bg-[#111111] p-4 text-xs uppercase tracking-[0.18em] text-slate-400 md:grid-cols-[2.5fr_1fr_1fr_1fr]">
-            <span>Product Type</span>
+        <section className="invoice-items">
+          <div className="items-header">
+            <span>No.</span>
+            <span>Description</span>
             <span>Qty</span>
-            <span>Unit Price</span>
-            <span>Line Total</span>
+            <span>Unit Price (RM)</span>
+            <span>Amount (RM)</span>
           </div>
-          <div className="grid gap-3 p-4 text-sm text-slate-300 md:grid-cols-[2.5fr_1fr_1fr_1fr]">
-            <div>
-              <p className="font-semibold text-white">{product}</p>
-              <p className="mt-1 text-xs text-slate-400">Flavour breakdown</p>
-              <ul className="mt-2 space-y-1 text-sm text-slate-300">
-                {items.map((item, index) => (
-                  <li key={`${item.flavour}-${index}`} className="flex items-center gap-2">
-                    <span className="inline-flex h-2 w-2 rounded-full bg-gold" />
-                    {item.flavour || item.product}
-                  </li>
-                ))}
-              </ul>
+          {items.map((item, index) => (
+            <div className="items-row" key={`${item.description}-${index}`}>
+              <span>{index + 1}</span>
+              <span>{item.description}</span>
+              <span>{item.quantity} pcs</span>
+              <span>{item.unitPrice.toFixed(2)}</span>
+              <span>{(item.quantity * item.unitPrice).toFixed(2)}</span>
             </div>
-            <div className="flex items-center justify-center text-white">{quantity}</div>
-            <div className="flex items-center justify-center text-white">{formatCurrency(finalUnitPrice)}</div>
-            <div className="flex items-center justify-center text-white">{formatCurrency(displaySubtotal)}</div>
-          </div>
-        </div>
+          ))}
+        </section>
 
-        <div className="mt-5 grid gap-4 lg:grid-cols-[1fr_0.9fr]">
-          <div className="rounded-[20px] border border-white/10 bg-[#111111] p-4">
-            <p className="text-xs uppercase tracking-[0.18em] text-softGold">Payment Instructions</p>
-            <p className="mt-3 text-sm leading-6 text-slate-300">Please settle payment via bank transfer or QR payment. Reference the invoice number when completing the payment.</p>
-            <div className="mt-4 rounded-[18px] border border-white/10 bg-[#0f0f0f] p-4">
-              <p className="text-xs uppercase tracking-[0.18em] text-slate-400">Bank Transfer / QR Placeholder</p>
-              <div className="mt-3 flex items-center justify-center rounded-[16px] border border-dashed border-white/10 bg-[#131313] p-5">
-                <div className="h-20 w-20 rounded-[12px] bg-white/5" />
-              </div>
-              <p className="mt-3 text-xs text-slate-400">Scan this QR code or use the bank transfer details above.</p>
-            </div>
+        <section className="invoice-bottom">
+          <div className="notes-block">
+            <p className="section-label">Notes</p>
+            <div className="small-rule" />
+            <p>Thank you for your order.</p>
+            <p>All mini tarts are freshly baked and are best consumed on the same day.</p>
+            <p>{COMPANY.name}</p>
+            <p className="script-line">Every Layer Tells A Story.</p>
           </div>
-          <div className="rounded-[20px] border border-white/10 bg-[#111111] p-4">
-            <div className="space-y-3 text-sm text-slate-300">
-              <div className="flex items-center justify-between border-b border-white/10 pb-2">
-                <span>Original Unit Price</span>
-                <span>{formatCurrency(originalUnitPrice)}</span>
-              </div>
-              <div className="flex items-center justify-between border-b border-white/10 pb-2">
-                <span>Final Unit Price</span>
-                <span>{formatCurrency(finalUnitPrice)}</span>
-              </div>
-              <div className="flex items-center justify-between border-b border-white/10 pb-2">
-                <span>Original Subtotal</span>
-                <span>{formatCurrency(originalSubtotal)}</span>
-              </div>
-              <div className="flex items-center justify-between border-b border-white/10 pb-2">
-                <span>Discount Amount</span>
-                <span>{formatCurrency(discountAmount)}</span>
-              </div>
-              <div className="border-b border-white/10 pb-2">
-                <span className="block text-slate-400">Discount Reason</span>
-                <span className="mt-1 block text-white">{discountReason || '-'}</span>
-              </div>
-              <div className="flex items-center justify-between border-b border-white/10 pb-2">
-                <span>Final Subtotal</span>
-                <span>{formatCurrency(displaySubtotal)}</span>
-              </div>
-              <div className="flex items-center justify-between border-b border-white/10 pb-2">
-                <span>Delivery Fee</span>
-                <span>{formatCurrency(deliveryFee)}</span>
-              </div>
-              <div className="flex items-center justify-between border-b border-white/10 pb-2">
-                <span>Tax</span>
-                <span>RM0.00</span>
-              </div>
-              <div className="flex items-center justify-between border-t border-white/10 pt-3 text-lg font-semibold text-white">
-                <span>Total Amount</span>
-                <span>{formatCurrency(displayTotal)}</span>
+
+          <div className="totals-block">
+            <div className="totals-line"><span>Subtotal</span><strong>{formatCurrency(displaySubtotal)}</strong></div>
+            <div className="totals-line"><span>Delivery Fee</span><strong>{formatCurrency(deliveryFee)}</strong></div>
+            <div className="totals-line"><span>Discount</span><strong>{formatCurrency(displayDiscount)}</strong></div>
+            <div className="totals-main"><span>Total</span><strong>{formatCurrency(displayTotal)}</strong></div>
+            <div className="payment-box">
+              <div className="bank-icon"><Building2 size={24} /></div>
+              <div>
+                <p className="section-label">Payment Information</p>
+                <p>{COMPANY.bankName}</p>
+                <h4>{COMPANY.bankAccount}</h4>
+                <p>{COMPANY.bankHolder}</p>
               </div>
             </div>
           </div>
-        </div>
-      </div>
+        </section>
+
+        <footer className="invoice-footer">
+          <p>Event Catering <span>•</span> Corporate Gifting <span>•</span> Wedding Dessert <span>•</span> Private Events</p>
+          <strong>Thank you for supporting our small business.</strong>
+          <span className="footer-heart">♥</span>
+        </footer>
+      </article>
+    </div>
+  );
+}
+
+function InfoLine({ icon, text, compact = false }: { icon: React.ReactNode; text: string; compact?: boolean }) {
+  return (
+    <div className={`info-line ${compact ? 'compact' : ''}`}>
+      <span>{icon}</span>
+      <p>{text}</p>
+    </div>
+  );
+}
+
+function InvoiceActions({
+  paymentStatus,
+  onDownload,
+  onPrint,
+  onWhatsApp,
+  onMarkPaid
+}: {
+  paymentStatus: string;
+  onDownload: () => void;
+  onPrint: () => void;
+  onWhatsApp: () => void;
+  onMarkPaid: () => void | Promise<void>;
+}) {
+  return (
+    <div className="flex flex-wrap gap-2">
+      <button onClick={onDownload} className="rounded-full bg-gold px-4 py-2 text-xs font-semibold text-charcoal transition hover:bg-[#b9985f]">
+        <Download size={13} className="mr-1 inline" /> Download PDF
+      </button>
+      <button onClick={onPrint} className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-xs text-white transition hover:bg-white/10">
+        <Printer size={13} className="mr-1 inline" /> Print
+      </button>
+      <button onClick={() => void onMarkPaid()} disabled={paymentStatus.toLowerCase().includes('paid')} className="rounded-full border border-emerald-500/20 bg-emerald-500/10 px-4 py-2 text-xs text-emerald-200 transition hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-60">
+        {paymentStatus.toLowerCase().includes('paid') ? 'Paid' : 'Mark as Paid'}
+      </button>
+      <button onClick={onWhatsApp} className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-xs text-white transition hover:bg-white/10">
+        <Send size={13} className="mr-1 inline" /> WhatsApp
+      </button>
     </div>
   );
 }

@@ -24,6 +24,7 @@ type ProductFormState = {
   price: string;
   status: Product['status'];
   imageUrl: string;
+  sortOrder: string;
 };
 
 const emptyForm: ProductFormState = {
@@ -32,11 +33,12 @@ const emptyForm: ProductFormState = {
   description: '',
   price: '',
   status: 'Available',
-  imageUrl: ''
+  imageUrl: '',
+  sortOrder: ''
 };
 
-const statusOptions: Product['status'][] = ['Available', 'Out of Stock', 'Seasonal', 'Premium'];
-const categoryOptions: Product['category'][] = ['Mini Tart', 'Croissant Egg Tart'];
+const statusOptions: Product['status'][] = ['Available', 'Unavailable'];
+const categoryOptions: Product['category'][] = ['Mini Tart', 'Croissant Egg Tart', 'Chewy Cookie', 'Others'];
 const placeholderImage = 'https://images.unsplash.com/photo-1551024506-0bccd828d307?auto=format&fit=crop&w=900&q=80';
 const getProductImageUrl = (product: Product) => product.imageUrl || product.image_url || product.image || placeholderImage;
 
@@ -53,7 +55,8 @@ const productToForm = (product: Product): ProductFormState => ({
   description: product.description,
   price: String(getProductUnitPrice(product)),
   status: product.status,
-  imageUrl: product.imageUrl || product.image_url || product.image || ''
+  imageUrl: product.imageUrl || product.image_url || product.image || '',
+  sortOrder: product.sortOrder == null ? '' : String(product.sortOrder)
 });
 
 function ProductModal({
@@ -158,6 +161,19 @@ function ProductModal({
                 placeholder={placeholderImage}
               />
             </label>
+
+            <label className="block text-sm text-slate-300">
+              Sort Order
+              <input
+                type="number"
+                min="0"
+                step="1"
+                value={form.sortOrder}
+                onChange={(event) => setForm((current) => ({ ...current, sortOrder: event.target.value }))}
+                className="mt-3 w-full rounded-[24px] border border-white/10 bg-[#111111] px-4 py-3 text-white outline-none focus:border-gold/60"
+                placeholder="Optional"
+              />
+            </label>
           </div>
 
           <aside className="rounded-[28px] border border-white/10 bg-white/5 p-4">
@@ -229,7 +245,7 @@ export default function ProductsPage({ products, setProducts, readOnly = false }
   const [supabaseError, setSupabaseError] = useState('');
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
 
-  const activeCount = useMemo(() => products.filter((product) => product.status !== 'Out of Stock').length, [products]);
+  const activeCount = useMemo(() => products.filter((product) => product.status === 'Available').length, [products]);
 
   const persistProducts = (nextProducts: Product[]) => {
     setProducts(nextProducts);
@@ -333,7 +349,8 @@ export default function ProductsPage({ products, setProducts, readOnly = false }
         status: form.status,
         flavours: [trimmedName],
         description: form.description.trim(),
-        createdAt: new Date().toISOString().slice(0, 10)
+        createdAt: new Date().toISOString().slice(0, 10),
+        sortOrder: form.sortOrder === '' ? undefined : Math.max(0, Number(form.sortOrder) || 0)
       };
       try {
         const savedProduct = await createProductInSupabase(newProduct);
@@ -365,7 +382,8 @@ export default function ProductsPage({ products, setProducts, readOnly = false }
         image: imageUrl,
         status: form.status,
         flavours: [trimmedName],
-        description: form.description.trim()
+        description: form.description.trim(),
+        sortOrder: form.sortOrder === '' ? undefined : Math.max(0, Number(form.sortOrder) || 0)
       };
 
       try {

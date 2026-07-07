@@ -49,6 +49,7 @@ type Account = {
   activities: LeadActivity[];
   followUps: FollowUpTask[];
   revenue: number;
+  potentialOrderValue: number;
   wonDeals: number;
   lastActivity: string;
   leadTypes: SalesLeadType[];
@@ -100,6 +101,32 @@ const getOrderDate = (order: Order) =>
   order.statusHistory?.[order.statusHistory.length - 1]?.timestamp || order.deliveryDate || '';
 
 const getOrderNumber = (order: Order) => order.orderNo || order.id || 'Order';
+
+const getOrderAliases = (order: Order) =>
+  Array.from(new Set(
+    [order.supabaseId, order.id, order.orderNo]
+      .map((value) => String(value || '').trim())
+      .filter(Boolean)
+  ));
+
+const getRuntimeId = (record: unknown, keys: string[]) => {
+  if (!record || typeof record !== 'object') return '';
+  const values = record as Record<string, unknown>;
+  for (const key of keys) {
+    const value = values[key];
+    if (value !== undefined && value !== null && String(value).trim()) return String(value);
+  }
+  return '';
+};
+
+const isCancelledOrder = (order: Order) =>
+  String(order.workflowStatus || '').toLowerCase() === 'cancelled';
+
+const isRevenueOrder = (order: Order) =>
+  !isCancelledOrder(order) && (
+    String(order.paymentStatus || '').toLowerCase() === 'paid' ||
+    String(order.workflowStatus || '').toLowerCase() === 'completed'
+  );
 
 const getAccountKey = (lead: SalesLead) =>
   normalizeText(lead.companyName) || `lead-${String(lead.id || lead.phone || 'unknown')}`;
@@ -206,29 +233,50 @@ export default function CorporateAccountsPage({ orders }: CorporateAccountsPageP
   const [typeFilter, setTypeFilter] = useState<'All' | SalesLeadType>('All');
   const [statusFilter, setStatusFilter] = useState<'All' | SalesLeadStatus>('All');
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
+  const [warnings, setWarnings] = useState<string[]>([]);
 
   useEffect(() => {
     let mounted = true;
 
-    Promise.all([
+    Promise.allSettled([
       loadSalesLeadsFromSupabase(),
       loadQuotationsFromSupabase(),
       loadLeadActivitiesFromSupabase(),
       loadFollowUpTasksReadOnlyFromSupabase()
     ])
-      .then(([leadData, quotationData, activityData, followUpData]) => {
+      .then(([leadResult, quotationResult, activityResult, followUpResult]) => {
         if (!mounted) return;
-        setLeads(leadData);
-        setQuotations(quotationData);
-        setActivities(activityData);
-        setFollowUps(followUpData);
-        setError('');
-      })
-      .catch((loadError) => {
-        if (!mounted) return;
-        console.error('Corporate accounts load error:', loadError);
-        setError('Corporate account data could not be loaded from Supabase.');
+        const nextWarnings: string[] = [];
+
+        if (leadResult.status === 'fulfilled') {
+          setLeads(leadResult.value);
+        } else {
+          console.error('Corporate accounts lead load error:', leadResult.reason);
+          nextWarnings.push('Corporate leads could not be loaded.');
+        }
+
+        if (quotationResult.status === 'fulfilled') {
+          setQuotations(quotationResult.value);
+        } else {
+          console.error('Corporate accounts quotation load error:', quotationResult.reason);
+          nextWarnings.push('Quotation history is temporarily unavailable.');
+        }
+
+        if (activityResult.status === 'fulfilled') {
+          setActivities(activityResult.value);
+        } else {
+          console.error('Corporate accounts activity load error:', activityResult.reason);
+          nextWarnings.push('Lead activity history is temporarily unavailable.');
+        }
+
+        if (followUpResult.status === 'fulfilled') {
+          setFollowUps(followUpResult.value);
+        } else {
+          console.error('Corporate accounts follow-up load error:', followUpResult.reason);
+          nextWarnings.push('Follow-up summaries are temporarily unavailable.');
+        }
+
+        setWarnings(nextWarnings);
       })
       .finally(() => {
         if (mounted) setLoading(false);
@@ -246,15 +294,52 @@ export default function CorporateAccountsPage({ orders }: CorporateAccountsPageP
       grouped.set(key, [...(grouped.get(key) || []), lead]);
     });
 
-    return Array.from(grouped.entries()).map(([key, accountLeads]): Account => {
+    const accountEntries = Array.from(grouped.entries());
+    const assignedOrders = new Map<string, Order[]>();
+    const uniqueOrders = new Map<string, Order>();
+    const seenOrderAliases = new Set<string>();
+
+    orders.forEach((order) => {
+      const aliases = getOrderAliases(order);
+      if (!aliases.length || aliases.some((alias) => seenOrderAliases.has(alias))) return;
+      aliases.forEach((alias) => seenOrderAliases.add(alias));
+      uniqueOrders.set(aliases[0], order);
+    });
+
+    uniqueOrders.forEach((order) => {
+      const orderLeadId = getRuntimeId(order, ['leadId', 'lead_id', 'salesLeadId', 'sales_lead_id']);
+      const orderCustomerId = String(order.customerId || '').trim();
+      const orderPhone = normalizePhone(order.phone);
+      const orderName = normalizeText(order.customerName);
+      const candidates = accountEntries
+        .map(([key, accountLeads]) => {
+          const leadIds = new Set(accountLeads.map((lead) => String(lead.id || '')).filter(Boolean));
+          const customerIds = new Set(accountLeads
+            .map((lead) => getRuntimeId(lead, ['customerId', 'customer_id']))
+            .filter(Boolean));
+          const phones = new Set(accountLeads.map((lead) => normalizePhone(lead.phone)).filter(Boolean));
+          const companyNames = new Set(accountLeads.map((lead) => normalizeText(lead.companyName)).filter(Boolean));
+          const linkedMatch = Boolean(orderLeadId) && leadIds.has(orderLeadId);
+          const customerMatch = Boolean(orderCustomerId) && customerIds.has(orderCustomerId);
+          const phoneMatch = Boolean(orderPhone) && phones.has(orderPhone);
+          const nameMatch = Boolean(orderName) && companyNames.has(orderName);
+          const score = linkedMatch || customerMatch ? 100 : (phoneMatch ? 20 : 0) + (nameMatch ? 10 : 0);
+          return { key, score };
+        })
+        .filter((candidate) => candidate.score > 0)
+        .sort((a, b) => b.score - a.score);
+
+      if (!candidates.length) return;
+      if (candidates[1]?.score === candidates[0].score) return;
+      const accountKey = candidates[0].key;
+      assignedOrders.set(accountKey, [...(assignedOrders.get(accountKey) || []), order]);
+    });
+
+    return accountEntries.map(([key, accountLeads]): Account => {
       const leadIds = new Set(accountLeads.map((lead) => String(lead.id || '')));
-      const phones = new Set(accountLeads.map((lead) => normalizePhone(lead.phone)).filter(Boolean));
-      const companyNames = new Set(accountLeads.map((lead) => normalizeText(lead.companyName)).filter(Boolean));
-      const accountOrders = orders.filter((order) => {
-        const phoneMatch = Boolean(normalizePhone(order.phone)) && phones.has(normalizePhone(order.phone));
-        const nameMatch = Boolean(normalizeText(order.customerName)) && companyNames.has(normalizeText(order.customerName));
-        return phoneMatch || nameMatch;
-      });
+      const accountOrders = assignedOrders.get(key) || [];
+      const revenueOrders = accountOrders.filter(isRevenueOrder);
+      const potentialOrders = accountOrders.filter((order) => !isCancelledOrder(order) && !isRevenueOrder(order));
       const accountQuotations = quotations.filter((quotation) => leadIds.has(String(quotation.leadId)));
       const accountActivities = activities.filter((activity) => leadIds.has(String(activity.leadId)));
       const accountFollowUps = followUps.filter((task) => leadIds.has(String(task.leadId)));
@@ -274,7 +359,8 @@ export default function CorporateAccountsPage({ orders }: CorporateAccountsPageP
         quotations: accountQuotations,
         activities: accountActivities,
         followUps: accountFollowUps,
-        revenue: accountOrders.reduce((sum, order) => sum + toSafeNumber(order.totalAmount), 0),
+        revenue: revenueOrders.reduce((sum, order) => sum + toSafeNumber(order.totalAmount), 0),
+        potentialOrderValue: potentialOrders.reduce((sum, order) => sum + toSafeNumber(order.totalAmount), 0),
         wonDeals: accountLeads.filter((lead) => lead.status === 'Won').length,
         lastActivity: dateCandidates.sort((a, b) => safeDateValue(b) - safeDateValue(a))[0] || '',
         leadTypes: Array.from(new Set(accountLeads.map((lead) => lead.leadType))),
@@ -282,7 +368,9 @@ export default function CorporateAccountsPage({ orders }: CorporateAccountsPageP
         area: accountLeads.find((lead) => lead.area.trim())?.area || 'Area not set',
         phone: accountLeads.find((lead) => lead.phone.trim())?.phone || ''
       };
-    }).sort((a, b) => b.revenue - a.revenue || safeDateValue(b.lastActivity) - safeDateValue(a.lastActivity));
+    })
+      .filter((account) => account.orders.length > 0 || account.leads.some((lead) => lead.status === 'Won'))
+      .sort((a, b) => b.revenue - a.revenue || safeDateValue(b.lastActivity) - safeDateValue(a.lastActivity));
   }, [activities, followUps, leads, orders, quotations]);
 
   const filteredAccounts = useMemo(() => {
@@ -416,8 +504,11 @@ export default function CorporateAccountsPage({ orders }: CorporateAccountsPageP
         </div>
       </section>
 
-      {error ? (
-        <div className="rounded-xl border border-rose-500/25 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">{error}</div>
+      {warnings.length > 0 ? (
+        <div className="rounded-xl border border-amber-500/25 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
+          <p className="font-semibold">Some corporate account data is temporarily unavailable.</p>
+          <p className="mt-1 text-xs leading-5 text-amber-100/75">{warnings.join(' ')}</p>
+        </div>
       ) : null}
 
       <div className="grid gap-4 xl:grid-cols-[minmax(280px,0.72fr)_minmax(0,1.7fr)]">
@@ -575,6 +666,10 @@ export default function CorporateAccountsPage({ orders }: CorporateAccountsPageP
                         <dd className="text-right font-medium text-[#d0d6e0]">{formatRM(selectedAccount.leads.reduce((sum, lead) => sum + toSafeNumber(lead.potentialValue), 0))}</dd>
                       </div>
                       <div className="flex justify-between gap-3 border-b border-[#23252a] pb-2">
+                        <dt className="text-[#8a8f98]">Unpaid order value</dt>
+                        <dd className="text-right font-medium text-[#d0d6e0]">{formatRM(selectedAccount.potentialOrderValue)}</dd>
+                      </div>
+                      <div className="flex justify-between gap-3 border-b border-[#23252a] pb-2">
                         <dt className="text-[#8a8f98]">Accepted quotes</dt>
                         <dd className="text-right font-medium text-[#d0d6e0]">{selectedAccount.quotations.filter((quotation) => quotation.status === 'Accepted').length}</dd>
                       </div>
@@ -595,7 +690,7 @@ export default function CorporateAccountsPage({ orders }: CorporateAccountsPageP
         <div className="flex items-center justify-between gap-3">
           <div>
             <h2 className="text-sm font-semibold text-[#f7f8f8]">Top Corporate Customers</h2>
-            <p className="mt-1 text-xs text-[#62666d]">Ranked by matched order revenue</p>
+            <p className="mt-1 text-xs text-[#62666d]">Ranked by unique paid or completed order revenue</p>
           </div>
           <CheckCircle2 size={17} className="text-[#828fff]" />
         </div>

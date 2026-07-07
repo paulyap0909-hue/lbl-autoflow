@@ -1,13 +1,22 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronDown, ChevronUp } from 'lucide-react';
-import Toast from '../components/Toast';
-import { formatRM } from '../utils/pricing';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  createFollowUpTaskInSupabase,
-  loadFollowUpTasksFromSupabase,
-  notifyFollowUpTasksChanged,
-  type FollowUpTask
-} from '../services/followUpTaskService';
+  Archive,
+  CalendarClock,
+  Check,
+  ChevronLeft,
+  ChevronRight,
+  CirclePlus,
+  FileText,
+  Filter,
+  Import,
+  MessageCircle,
+  MoreHorizontal,
+  Search,
+  Target,
+  Trash2,
+  X
+} from 'lucide-react';
+import Toast from '../components/Toast';
 import {
   archiveSalesLeadInSupabase,
   createLeadActivityInSupabase,
@@ -15,24 +24,49 @@ import {
   deleteSalesLeadsFromSupabase,
   loadLeadActivitiesFromSupabase,
   loadSalesLeadsFromSupabase,
+  recordSalesLeadWhatsAppContact,
   updateSalesLeadInSupabase,
   type LeadActivity,
   type SalesLead,
   type SalesLeadStatus,
   type SalesLeadType
 } from '../services/salesLeadService';
+import {
+  completeFollowUpTaskInSupabase,
+  createFollowUpTaskInSupabase,
+  loadFollowUpTasksFromSupabase,
+  notifyFollowUpTasksChanged,
+  type FollowUpTask
+} from '../services/followUpTaskService';
+import { buildCorporateWhatsAppUrl, normalizeMalaysiaMobile } from '../utils/corporateWhatsApp';
+import {
+  buildLeadFirstContactMessage,
+  buildLeadFollowUpReplyMessage
+} from '../config/leadMessageTemplates';
 
-const statuses: SalesLeadStatus[] = ['New', 'Contacted', 'Interested', 'Sample Scheduled', 'Quoted', 'Won', 'Lost'];
-const leadTypes: SalesLeadType[] = ['Corporate', 'Event Planner', 'Wedding Planner', 'Cafe', 'Hotel', 'School', 'Government', 'Other'];
+type LeadCenterStatus = 'New' | 'Contacted' | 'Interested' | 'Quoted' | 'Won' | 'Lost';
+type StatusFilter = 'All' | LeadCenterStatus;
 
-const todayKey = () => new Date().toISOString().slice(0, 10);
+const PAGE_SIZE = 25;
+const LEAD_STATUSES: LeadCenterStatus[] = ['New', 'Contacted', 'Interested', 'Quoted', 'Won', 'Lost'];
+const LEAD_TYPES: SalesLeadType[] = ['Corporate', 'Event Planner', 'Wedding Planner', 'Cafe', 'Hotel', 'School', 'Government', 'Other'];
+
+const localDateKey = (date = new Date()) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+const dateAfterDays = (days: number) => {
+  const date = new Date();
+  date.setDate(date.getDate() + days);
+  return localDateKey(date);
+};
 
 const getCurrentUserLabel = () => {
   try {
-    const currentUser = JSON.parse(localStorage.getItem('lbl_currentUser') || '{}') as {
-      email?: string;
-      role?: string;
-    };
+    const currentUser = JSON.parse(localStorage.getItem('lbl_currentUser') || '{}') as { email?: string; role?: string };
     return currentUser.email || currentUser.role || 'Unknown user';
   } catch {
     return 'Unknown user';
@@ -44,26 +78,17 @@ const notifySalesDataChanged = () => {
   window.dispatchEvent(new CustomEvent('lbl:sales-crm-updated'));
 };
 
-const corporateLeadsWhatsAppMessage = `Hi, this is Selina from Layer By Layer Bakery ☺️
+const displayStatus = (status: SalesLeadStatus): LeadCenterStatus =>
+  status === 'Sample Scheduled' ? 'Interested' : status === 'Archived' ? 'Lost' : status;
 
-May I know who would be the best person to speak with regarding staff events, office tea breaks, corporate gifting or company celebrations?
-
-We specialise in premium handcrafted mini tarts that are commonly ordered for meetings, appreciation events, training sessions and company gatherings.
-
-Would appreciate if you could point me in the right direction. Thank you 😊`;
-
-type WhatsAppTemplate = 'First Outreach' | 'Follow-up 1' | 'Follow-up 2' | 'Quotation Follow-up';
-type QuickFilter = 'All Active' | 'Today' | 'Hot' | 'Corporate' | 'School' | 'Hotel' | 'Wedding' | 'Event' | 'Overdue';
-type PriorityFilter = 'All' | SalesLead['leadPriority'];
-
-const whatsappTemplates: WhatsAppTemplate[] = [
-  'First Outreach',
-  'Follow-up 1',
-  'Follow-up 2',
-  'Quotation Follow-up'
-];
-
-const generateWhatsAppMessage = (_lead: SalesLead, _template: WhatsAppTemplate) => corporateLeadsWhatsAppMessage;
+const statusTone = (status: LeadCenterStatus) => {
+  if (status === 'Won') return 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300';
+  if (status === 'Lost') return 'border-rose-500/25 bg-rose-500/10 text-rose-300';
+  if (status === 'Quoted') return 'border-[#C8A96B]/30 bg-[#C8A96B]/10 text-[#E4C98E]';
+  if (status === 'Interested') return 'border-sky-500/25 bg-sky-500/10 text-sky-300';
+  if (status === 'Contacted') return 'border-amber-500/25 bg-amber-500/10 text-amber-300';
+  return 'border-[#334155] bg-[#0F172A] text-[#CBD5E1]';
+};
 
 const blankLead = (): SalesLead => ({
   companyName: '',
@@ -80,7 +105,7 @@ const blankLead = (): SalesLead => ({
   status: 'New',
   notes: '',
   lastContactDate: '',
-  nextFollowUpDate: todayKey(),
+  nextFollowUpDate: '',
   potentialValue: 0,
   actualRevenue: 0,
   sampleStatus: 'Not Started',
@@ -91,57 +116,13 @@ const blankLead = (): SalesLead => ({
   automationEnabled: true
 });
 
-const normalizeMalaysiaPhone = (phone: string) => {
-  const digits = phone.replace(/\D/g, '');
-  if (!digits) return '';
-  if (digits.startsWith('60')) return digits;
-  if (digits.startsWith('0')) return `6${digits}`;
-  return digits;
-};
-
-const isDue = (lead: SalesLead) =>
-  Boolean(lead.nextFollowUpDate) && lead.nextFollowUpDate <= todayKey() && lead.status !== 'Won' && lead.status !== 'Lost';
-
-const isFollowUpToday = (lead: SalesLead) =>
-  lead.nextFollowUpDate === todayKey() && lead.status !== 'Won' && lead.status !== 'Lost';
-
-const sampleStatusForLead = (lead: SalesLead) => lead.sampleStatus;
-
-const statusTone = (status: SalesLeadStatus) => {
-  if (status === 'Archived') return 'border-slate-500/20 bg-slate-500/10 text-slate-300';
-  if (status === 'Won') return 'border-emerald-500/20 bg-emerald-500/10 text-emerald-200';
-  if (status === 'Lost') return 'border-rose-500/20 bg-rose-500/10 text-rose-200';
-  if (status === 'Quoted') return 'border-gold/30 bg-gold/15 text-softGold';
-  if (status === 'Sample Scheduled') return 'border-sky-500/20 bg-sky-500/10 text-sky-200';
-  if (status === 'Interested') return 'border-indigo-500/20 bg-indigo-500/10 text-indigo-200';
-  if (status === 'Contacted') return 'border-amber-500/20 bg-amber-500/10 text-amber-200';
-  return 'border-white/10 bg-white/5 text-slate-300';
-};
-
-const toNumber = (value: string) => {
-  const parsed = Number(value.replace(/[^\d.-]/g, ''));
-  return Number.isFinite(parsed) ? parsed : 0;
-};
-
-const normalizeStatus = (value: string): SalesLeadStatus => {
-  const match = statuses.find((status) => status.toLowerCase() === value.trim().toLowerCase());
-  return match || 'New';
-};
-
-const normalizeLeadType = (value: string): SalesLeadType => {
-  const match = leadTypes.find((type) => type.toLowerCase() === value.trim().toLowerCase());
-  return match || 'Corporate';
-};
-
 const parseCsvLine = (line: string) => {
   const values: string[] = [];
   let current = '';
   let quoted = false;
-
   for (let index = 0; index < line.length; index += 1) {
     const char = line[index];
-    const nextChar = line[index + 1];
-    if (char === '"' && quoted && nextChar === '"') {
+    if (char === '"' && quoted && line[index + 1] === '"') {
       current += '"';
       index += 1;
     } else if (char === '"') {
@@ -160,1395 +141,677 @@ const parseCsvLine = (line: string) => {
 const parseLeadCsv = (text: string) => {
   const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   if (lines.length < 2) return [];
-
   const normalizeHeader = (header: string) => header.replace(/^\uFEFF/, '').trim().toLowerCase().replace(/\s+/g, '_');
   const headers = parseCsvLine(lines[0]).map(normalizeHeader);
-  const valueAt = (values: string[], ...names: string[]) => {
-    const index = names
-      .map(normalizeHeader)
-      .map((name) => headers.indexOf(name))
-      .find((headerIndex) => headerIndex >= 0);
+  const getValue = (values: string[], ...keys: string[]) => {
+    const index = keys.map(normalizeHeader).map((key) => headers.indexOf(key)).find((candidate) => candidate >= 0);
     return index === undefined ? '' : values[index] || '';
   };
-
-  return lines.slice(1).map((line): SalesLead => {
+  return lines.slice(1).map((line) => {
     const values = parseCsvLine(line);
-    const industry = valueAt(values, 'industry');
+    const statusValue = getValue(values, 'status');
+    const status = LEAD_STATUSES.find((item) => item.toLowerCase() === statusValue.toLowerCase()) || 'New';
+    const typeValue = getValue(values, 'lead_type', 'lead type');
+    const leadType = LEAD_TYPES.find((item) => item.toLowerCase() === typeValue.toLowerCase()) || 'Corporate';
     return {
-      companyName: valueAt(values, 'company_name', 'company name'),
-      leadType: normalizeLeadType(valueAt(values, 'lead_type', 'lead type') || 'Corporate'),
-      industry,
-      contactPerson: valueAt(values, 'contact_person', 'contact person'),
-      phone: valueAt(values, 'phone'),
-      email: valueAt(values, 'email'),
-      website: valueAt(values, 'website'),
-      facebook: valueAt(values, 'facebook'),
-      instagram: valueAt(values, 'instagram'),
-      area: valueAt(values, 'area'),
-      leadSource: valueAt(values, 'lead_source', 'lead source'),
-      status: normalizeStatus(valueAt(values, 'status') || 'New'),
-      notes: valueAt(values, 'notes'),
-      lastContactDate: valueAt(values, 'last_contact_date', 'last contact date'),
-      nextFollowUpDate: valueAt(values, 'next_follow_up_date', 'next follow up date', 'next_follow_up'),
-      potentialValue: toNumber(valueAt(values, 'potential_value', 'potential value')),
-      actualRevenue: 0,
-      sampleStatus: 'Not Started',
-      whatsappReady: Boolean(valueAt(values, 'phone').trim()),
-      messagesSent: 0,
-      leadScore: 0,
-      leadPriority: 'Cold',
-      automationEnabled: true
-    };
-  });
+      ...blankLead(),
+      companyName: getValue(values, 'company_name', 'company name'),
+      leadType,
+      industry: getValue(values, 'industry'),
+      contactPerson: getValue(values, 'contact_person', 'contact person'),
+      phone: getValue(values, 'phone'),
+      email: getValue(values, 'email'),
+      website: getValue(values, 'website'),
+      facebook: getValue(values, 'facebook'),
+      instagram: getValue(values, 'instagram'),
+      area: getValue(values, 'area'),
+      leadSource: getValue(values, 'lead_source', 'lead source', 'source'),
+      status,
+      notes: getValue(values, 'notes'),
+      nextFollowUpDate: getValue(values, 'next_follow_up_date', 'next follow up date', 'next_follow_up'),
+      potentialValue: Number(getValue(values, 'potential_value', 'potential value')) || 0,
+      whatsappReady: Boolean(getValue(values, 'phone').trim())
+    } satisfies SalesLead;
+  }).filter((lead) => lead.companyName.trim());
 };
 
-const priorityTone = (priority: SalesLead['leadPriority']) => {
-  if (priority === 'Hot') return 'border-rose-500/30 bg-rose-500/10 text-rose-200';
-  if (priority === 'Warm') return 'border-amber-500/30 bg-amber-500/10 text-amber-200';
-  return 'border-sky-500/20 bg-sky-500/10 text-sky-200';
-};
+function KpiCard({
+  label,
+  value,
+  note,
+  active,
+  onClick
+}: {
+  label: string;
+  value: number;
+  note: string;
+  active?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`min-h-[98px] rounded-xl border p-3.5 text-left transition ${
+        active
+          ? 'border-[#C8A96B]/45 bg-[#C8A96B]/10'
+          : 'border-[#334155] bg-[#111111] hover:border-[#C8A96B]/30'
+      }`}
+    >
+      <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[#64748B]">{label}</p>
+      <p className="mt-2 text-2xl font-semibold text-white">{value}</p>
+      <p className="mt-1 text-[11px] text-[#94A3B8]">{note}</p>
+    </button>
+  );
+}
 
-export default function SalesCRMPage() {
+export default function SalesCRMPage({ onNavigate }: { onNavigate?: (page: string) => void }) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [leads, setLeads] = useState<SalesLead[]>([]);
   const [activities, setActivities] = useState<LeadActivity[]>([]);
-  const [followUpTasks, setFollowUpTasks] = useState<FollowUpTask[]>([]);
-  const [selectedLeadId, setSelectedLeadId] = useState<string | number | null>(null);
-  const [draftLead, setDraftLead] = useState<SalesLead>(blankLead());
-  const [noteDraft, setNoteDraft] = useState('');
-  const [searchTerm, setSearchTerm] = useState('');
-  const [leadTypeFilter, setLeadTypeFilter] = useState<'All' | SalesLeadType>('All');
-  const [statusFilter, setStatusFilter] = useState<'All' | SalesLeadStatus>('All');
-  const [areaFilter, setAreaFilter] = useState('All');
-  const [sourceFilter, setSourceFilter] = useState('All');
+  const [followUps, setFollowUps] = useState<FollowUpTask[]>([]);
+  const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
-  const [drawerLeadId, setDrawerLeadId] = useState<string | number | null>(null);
-  const [draggingLeadId, setDraggingLeadId] = useState<string | number | null>(null);
-  const [dragOverStatus, setDragOverStatus] = useState<SalesLeadStatus | null>(null);
-  const [leadPendingDelete, setLeadPendingDelete] = useState<SalesLead | null>(null);
-  const [isDeleting, setIsDeleting] = useState(false);
-  const [isImporting, setIsImporting] = useState(false);
-  const [templateLead, setTemplateLead] = useState<SalesLead | null>(null);
-  const [selectedTemplate, setSelectedTemplate] = useState<WhatsAppTemplate>('First Outreach');
-  const [generatedMessage, setGeneratedMessage] = useState('');
-  const [quickFilter, setQuickFilter] = useState<QuickFilter>('All Active');
-  const [priorityFilter, setPriorityFilter] = useState<PriorityFilter>('All');
-  const [visibleActiveCount, setVisibleActiveCount] = useState(30);
-  const [expandedSections, setExpandedSections] = useState({
-    analytics: false,
-    won: false,
-    lost: false,
-    archived: false
-  });
-  const [isSelectedPanelExpanded, setIsSelectedPanelExpanded] = useState(false);
+  const [search, setSearch] = useState('');
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('All');
+  const [typeFilter, setTypeFilter] = useState<'All' | SalesLeadType>('All');
+  const [areaFilter, setAreaFilter] = useState('All');
+  const [page, setPage] = useState(1);
+  const [selectedLeadId, setSelectedLeadId] = useState<string | number | null>(null);
+  const [showLeadForm, setShowLeadForm] = useState(false);
+  const [leadDraft, setLeadDraft] = useState<SalesLead>(blankLead());
+  const [saving, setSaving] = useState(false);
+  const [importing, setImporting] = useState(false);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
 
-  useEffect(() => {
-    Promise.all([
-      loadSalesLeadsFromSupabase(),
-      loadLeadActivitiesFromSupabase(),
-      loadFollowUpTasksFromSupabase()
-    ])
-      .then(([leadData, activityData, taskData]) => {
-        setLeads(leadData);
-        setActivities(activityData);
-        setFollowUpTasks(taskData);
-        setSelectedLeadId(leadData[0]?.id || null);
-        setLoadError('');
-      })
-      .catch((error) => {
-        console.error('Sales CRM load error:', error);
-        setLeads([]);
-        setActivities([]);
-        setSelectedLeadId(null);
-        setLoadError(error instanceof Error ? error.message : 'Unable to load Sales CRM from Supabase.');
-      });
-  }, []);
-
-  const nonArchivedLeads = useMemo(() => leads.filter((lead) => lead.status !== 'Archived'), [leads]);
-  const activePipelineStatuses: SalesLeadStatus[] = ['New', 'Contacted', 'Interested', 'Quoted'];
-  const activeLeads = useMemo(() => nonArchivedLeads.filter((lead) => activePipelineStatuses.includes(lead.status)), [nonArchivedLeads]);
-  const selectedLead = leads.find((lead) => lead.id === selectedLeadId) || null;
-  const areas = useMemo(() => Array.from(new Set(nonArchivedLeads.map((lead) => lead.area).filter(Boolean))).sort(), [nonArchivedLeads]);
-  const leadSources = useMemo(() => Array.from(new Set(nonArchivedLeads.map((lead) => lead.leadSource).filter(Boolean))).sort(), [nonArchivedLeads]);
-
-  const filteredLeads = useMemo(() => {
-    const query = searchTerm.trim().toLowerCase();
-    return activeLeads.filter((lead) => {
-      const matchesLeadType = leadTypeFilter === 'All' || lead.leadType === leadTypeFilter;
-      const matchesStatus = statusFilter === 'All' || lead.status === statusFilter;
-      const matchesArea = areaFilter === 'All' || lead.area === areaFilter;
-      const matchesSource = sourceFilter === 'All' || lead.leadSource === sourceFilter;
-      const matchesPriority = priorityFilter === 'All' || lead.leadPriority === priorityFilter;
-      const matchesQuickFilter =
-        quickFilter === 'All Active' ||
-        (quickFilter === 'Today' && (isFollowUpToday(lead) || (lead.status === 'New' && !lead.lastContactDate))) ||
-        (quickFilter === 'Hot' && (lead.leadPriority === 'Hot' || lead.leadScore >= 80)) ||
-        (quickFilter === 'Corporate' && lead.leadType === 'Corporate') ||
-        (quickFilter === 'School' && lead.leadType === 'School') ||
-        (quickFilter === 'Hotel' && lead.leadType === 'Hotel') ||
-        (quickFilter === 'Wedding' && lead.leadType === 'Wedding Planner') ||
-        (quickFilter === 'Event' && lead.leadType === 'Event Planner') ||
-        (quickFilter === 'Overdue' && isDue(lead) && !isFollowUpToday(lead));
-      const matchesSearch = !query || [
-        lead.companyName,
-        lead.leadType,
-        lead.industry,
-        lead.contactPerson,
-        lead.phone,
-        lead.email,
-        lead.website,
-        lead.facebook,
-        lead.instagram,
-        lead.area,
-        lead.leadSource,
-        lead.notes
-      ].join(' ').toLowerCase().includes(query);
-      return matchesLeadType && matchesStatus && matchesArea && matchesSource && matchesPriority && matchesQuickFilter && matchesSearch;
-    });
-  }, [activeLeads, areaFilter, leadTypeFilter, priorityFilter, quickFilter, searchTerm, sourceFilter, statusFilter]);
-
-  useEffect(() => {
-    setVisibleActiveCount(30);
-  }, [areaFilter, leadTypeFilter, priorityFilter, quickFilter, searchTerm, sourceFilter, statusFilter]);
-
-  const groupedLeads = useMemo(() => {
-    return statuses.reduce<Record<SalesLeadStatus, SalesLead[]>>((acc, status) => {
-      acc[status] = filteredLeads.filter((lead) => lead.status === status);
-      return acc;
-    }, {
-      New: [],
-      Contacted: [],
-      Interested: [],
-      'Sample Scheduled': [],
-      Quoted: [],
-      Won: [],
-      Lost: [],
-      Archived: []
-    });
-  }, [filteredLeads]);
-
-  const kpis = useMemo(() => ({
-    total: nonArchivedLeads.length,
-    needContactToday: nonArchivedLeads.filter((lead) => lead.status === 'New' && !lead.lastContactDate && lead.messagesSent === 0).length,
-    followUpToday: nonArchivedLeads.filter(isFollowUpToday).length,
-    overdueLeads: nonArchivedLeads.filter((lead) => isDue(lead) && !isFollowUpToday(lead)).length,
-    pipelineValue: nonArchivedLeads
-      .filter((lead) => lead.status !== 'Won' && lead.status !== 'Lost')
-      .reduce((sum, lead) => sum + lead.potentialValue, 0),
-    new: nonArchivedLeads.filter((lead) => lead.status === 'New').length,
-    contacted: nonArchivedLeads.filter((lead) => lead.status === 'Contacted').length,
-    interested: nonArchivedLeads.filter((lead) => lead.status === 'Interested').length,
-    sample: nonArchivedLeads.filter((lead) => lead.status === 'Sample Scheduled').length,
-    quoted: nonArchivedLeads.filter((lead) => lead.status === 'Quoted').length,
-    won: nonArchivedLeads.filter((lead) => lead.status === 'Won').length,
-    lost: nonArchivedLeads.filter((lead) => lead.status === 'Lost').length,
-    revenue: nonArchivedLeads.reduce((sum, lead) => sum + lead.actualRevenue, 0)
-  }), [nonArchivedLeads]);
-
-  const automationKpis = useMemo(() => {
-    const today = todayKey();
-    return {
-      hot: nonArchivedLeads.filter((lead) => lead.leadPriority === 'Hot' || lead.leadScore >= 80).length,
-      warm: nonArchivedLeads.filter((lead) => lead.leadPriority === 'Warm').length,
-      cold: nonArchivedLeads.filter((lead) => lead.leadPriority === 'Cold').length,
-      autoFollowUps: activities.filter((activity) => activity.activityType === 'Auto Follow-up Schedule Created').length,
-      needingContactToday: followUpTasks.filter((task) => task.dueDate === today && task.status !== 'Completed').length
-    };
-  }, [nonArchivedLeads, activities, followUpTasks]);
-
-  const followUpKpis = useMemo(() => {
-    const today = todayKey();
-    return {
-      dueToday: followUpTasks.filter((task) => task.dueDate === today && task.status !== 'Completed').length,
-      overdue: followUpTasks.filter((task) => task.status === 'Overdue').length,
-      completed: followUpTasks.filter((task) => task.status === 'Completed').length
-    };
-  }, [followUpTasks]);
-
-  const whatsappStats = useMemo(() => {
-    const withPhone = nonArchivedLeads.filter((lead) => normalizeMalaysiaPhone(lead.phone)).length;
-    const sentLeadIds = new Set(
-      activities
-        .filter((activity) => activity.activityType === 'WhatsApp' || activity.activityType === 'WhatsApp Sent')
-        .map((activity) => String(activity.leadId))
-    );
-    const sent = nonArchivedLeads.filter((lead) => lead.id !== undefined && sentLeadIds.has(String(lead.id))).length;
-    const pending = Math.max(withPhone - sent, 0);
-    return { withPhone, sent, pending };
-  }, [nonArchivedLeads, activities]);
-
-  const sampleBoxStats = useMemo(() => {
-    const scheduled = nonArchivedLeads.filter((lead) => sampleStatusForLead(lead) === 'Scheduled').length;
-    const requested = nonArchivedLeads.filter((lead) => sampleStatusForLead(lead) === 'Requested').length;
-    const delivered = nonArchivedLeads.filter((lead) => sampleStatusForLead(lead) === 'Delivered').length;
-    return { scheduled, requested, delivered };
-  }, [nonArchivedLeads]);
-
-  const activityTimeline = useMemo(() => {
-    const leadNames = new Map(leads.map((lead) => [String(lead.id), lead.companyName]));
-    return activities.slice(0, 10).map((activity) => ({
-      id: String(activity.id || `${activity.leadId}-${activity.createdAt}`),
-      date: activity.createdAt?.slice(0, 10) || '',
-      title: leadNames.get(String(activity.leadId)) || 'Lead',
-      detail: activity.description || activity.activityType,
-      action: activity.activityType,
-      user: activity.performedBy || 'Unknown user'
-    }));
-  }, [activities, leads]);
-
-  const visibleActiveLeads = useMemo(() => filteredLeads.slice(0, visibleActiveCount), [filteredLeads, visibleActiveCount]);
-  const wonLeads = useMemo(() => leads.filter((lead) => lead.status === 'Won'), [leads]);
-  const lostLeads = useMemo(() => leads.filter((lead) => lead.status === 'Lost'), [leads]);
-  const archivedLeads = useMemo(() => leads.filter((lead) => lead.status === 'Archived'), [leads]);
-  const quickFilters: QuickFilter[] = ['All Active', 'Today', 'Hot', 'Corporate', 'School', 'Hotel', 'Wedding', 'Event', 'Overdue'];
-
-  const toggleSection = (section: keyof typeof expandedSections) => {
-    setExpandedSections((current) => ({ ...current, [section]: !current[section] }));
-  };
-
-  const recordActivity = async (leadId: number | string | undefined, activityType: string, description: string) => {
-    if (leadId === undefined) return;
-    try {
-      const created = await createLeadActivityInSupabase({
-        leadId,
-        activityType,
-        description,
-        performedBy: getCurrentUserLabel()
-      });
-      setActivities((current) => [created, ...current]);
-    } catch (error) {
-      console.error('Lead activity error:', error);
-      setToast({ message: 'Lead saved, but activity logging failed.', type: 'error' });
-    }
-  };
-
-  const refreshSalesCRMData = async () => {
-    const [leadData, activityData, taskData] = await Promise.all([
+  const reload = async () => {
+    setLoading(true);
+    const [leadResult, activityResult, followUpResult] = await Promise.allSettled([
       loadSalesLeadsFromSupabase(),
       loadLeadActivitiesFromSupabase(),
       loadFollowUpTasksFromSupabase()
     ]);
-    setLeads(leadData);
-    setActivities(activityData);
-    setFollowUpTasks(taskData);
-    setSelectedLeadId((current) => (
-      leadData.some((lead) => lead.id === current && lead.status !== 'Archived')
-        ? current
-        : leadData.find((lead) => lead.status !== 'Archived')?.id || null
-    ));
-    notifySalesDataChanged();
+    const warnings: string[] = [];
+    if (leadResult.status === 'fulfilled') setLeads(leadResult.value);
+    else warnings.push('Lead records are unavailable.');
+    if (activityResult.status === 'fulfilled') setActivities(activityResult.value);
+    else warnings.push('Activity history is unavailable.');
+    if (followUpResult.status === 'fulfilled') setFollowUps(followUpResult.value);
+    else warnings.push('Follow-up history is unavailable.');
+    setLoadError(warnings.join(' '));
+    setLoading(false);
   };
 
-  const persistUpdatedLead = async (updatedLead: SalesLead) => {
-    try {
-      const saved = await updateSalesLeadInSupabase(updatedLead);
-      setLeads((current) => current.map((lead) => lead.id === saved.id ? saved : lead));
-      setToast({ message: 'Lead updated.', type: 'success' });
-    } catch (error) {
-      console.error('Sales lead update error:', error);
-      setToast({ message: 'Failed to update lead in Supabase.', type: 'error' });
-      throw error;
-    }
-  };
+  useEffect(() => {
+    void reload();
+  }, []);
 
-  const moveLeadToStatus = async (lead: SalesLead, status: SalesLeadStatus) => {
-    if (lead.status === status || status === 'Archived') return;
+  const activeLeads = useMemo(() => leads.filter((lead) => lead.status !== 'Archived'), [leads]);
+  const today = localDateKey();
+  const taskLeadIdsDueToday = useMemo(
+    () => new Set(followUps.filter((task) => task.dueDate === today && task.status !== 'Completed').map((task) => String(task.leadId))),
+    [followUps, today]
+  );
+  const areas = useMemo(() => Array.from(new Set(activeLeads.map((lead) => lead.area).filter(Boolean))).sort(), [activeLeads]);
+  const kpis = useMemo(() => ({
+    new: activeLeads.filter((lead) => displayStatus(lead.status) === 'New').length,
+    needContact: activeLeads.filter((lead) => displayStatus(lead.status) === 'New' && !lead.lastContactDate).length,
+    followUp: activeLeads.filter((lead) => lead.nextFollowUpDate === today || taskLeadIdsDueToday.has(String(lead.id))).length,
+    quoted: activeLeads.filter((lead) => displayStatus(lead.status) === 'Quoted').length,
+    won: activeLeads.filter((lead) => displayStatus(lead.status) === 'Won').length,
+    lost: activeLeads.filter((lead) => displayStatus(lead.status) === 'Lost').length
+  }), [activeLeads, taskLeadIdsDueToday, today]);
 
-    try {
-      const updatedLead = {
-        ...lead,
-        status,
-        lastContactDate: todayKey(),
-        actualRevenue: status === 'Won' ? lead.actualRevenue || lead.potentialValue : lead.actualRevenue
-      };
-      await updateSalesLeadInSupabase(updatedLead);
-      await createLeadActivityInSupabase({
-        leadId: lead.id || '',
-        activityType: `Moved to ${status}`,
-        description: `${lead.companyName} moved from ${lead.status} to ${status}`,
-        performedBy: getCurrentUserLabel()
+  const filteredLeads = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    return activeLeads
+      .filter((lead) => {
+        const status = displayStatus(lead.status);
+        return (
+          (statusFilter === 'All' || status === statusFilter) &&
+          (typeFilter === 'All' || lead.leadType === typeFilter) &&
+          (areaFilter === 'All' || lead.area === areaFilter) &&
+          (!query || [lead.companyName, lead.contactPerson, lead.phone, lead.area, lead.email].join(' ').toLowerCase().includes(query))
+        );
+      })
+      .sort((a, b) => {
+        const aDue = a.nextFollowUpDate || '9999-12-31';
+        const bDue = b.nextFollowUpDate || '9999-12-31';
+        return aDue.localeCompare(bDue) || a.companyName.localeCompare(b.companyName);
       });
-      await refreshSalesCRMData();
-      setToast({ message: `Lead moved to ${status}.`, type: 'success' });
-    } catch (error) {
-      console.error('Move lead error:', error);
-      setToast({ message: 'Failed to move lead.', type: 'error' });
-    } finally {
-      setDraggingLeadId(null);
-      setDragOverStatus(null);
-    }
+  }, [activeLeads, areaFilter, search, statusFilter, typeFilter]);
+
+  useEffect(() => setPage(1), [areaFilter, search, statusFilter, typeFilter]);
+
+  const totalPages = Math.max(Math.ceil(filteredLeads.length / PAGE_SIZE), 1);
+  const visibleLeads = filteredLeads.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+  const selectedLead = leads.find((lead) => String(lead.id) === String(selectedLeadId)) || null;
+  const selectedTasks = selectedLead
+    ? followUps.filter((task) => String(task.leadId) === String(selectedLead.id))
+    : [];
+  const selectedActivities = selectedLead
+    ? activities.filter((activity) => String(activity.leadId) === String(selectedLead.id)).slice(0, 8)
+    : [];
+
+  const logActivity = async (lead: SalesLead, action: string, description: string) => {
+    if (lead.id === undefined) return;
+    const activity = await createLeadActivityInSupabase({
+      leadId: lead.id,
+      activityType: action,
+      description,
+      performedBy: getCurrentUserLabel()
+    });
+    setActivities((current) => [activity, ...current]);
   };
 
-  const handleLeadDrop = async (status: SalesLeadStatus) => {
-    const lead = leads.find((item) => String(item.id) === String(draggingLeadId));
-    if (!lead) {
-      setDraggingLeadId(null);
-      setDragOverStatus(null);
-      return;
-    }
-    await moveLeadToStatus(lead, status);
-  };
-
-  const createLead = async (lead: SalesLead, quiet = false) => {
+  const updateLead = async (lead: SalesLead, patch: Partial<SalesLead>, successMessage: string) => {
+    if (!lead.id) return;
+    setSaving(true);
     try {
-      const saved = await createSalesLeadInSupabase(lead);
-      setLeads((current) => [saved, ...current]);
-      setSelectedLeadId(saved.id || null);
-      await recordActivity(saved.id, 'Lead Created', `Lead created for ${saved.companyName}`);
+      const saved = await updateSalesLeadInSupabase({ ...lead, ...patch });
+      setLeads((current) => current.map((item) => item.id === saved.id ? saved : item));
+      await logActivity(lead, `Moved to ${displayStatus(saved.status)}`, successMessage);
       notifySalesDataChanged();
-      if (!quiet) setToast({ message: 'Lead created in Supabase.', type: 'success' });
+      setToast({ message: successMessage, type: 'success' });
     } catch (error) {
-      console.error('Sales lead create error:', error);
-      if (!quiet) setToast({ message: 'Failed to create lead in Supabase.', type: 'error' });
-      throw error;
+      console.error('Lead Center update error:', error);
+      setToast({ message: 'Lead update failed.', type: 'error' });
+    } finally {
+      setSaving(false);
     }
   };
 
-  const addLead = async () => {
-    if (!draftLead.companyName.trim()) {
-      setToast({ message: 'Company name is required.', type: 'error' });
+  const openWhatsApp = async (lead: SalesLead) => {
+    const url = buildCorporateWhatsAppUrl(
+      lead.phone,
+      buildLeadFirstContactMessage(lead.companyName)
+    );
+    if (!url) {
+      setToast({ message: 'Valid Malaysian mobile number missing.', type: 'error' });
       return;
     }
-    await createLead(draftLead);
-    setDraftLead(blankLead());
-  };
-
-  const handleCsvImport = async (file: File) => {
-    setIsImporting(true);
-    let imported = 0;
-    let skipped = 0;
-    let failed = 0;
-
+    window.open(url, '_blank', 'noopener,noreferrer');
+    if (!lead.id || ['Won', 'Lost', 'Archived'].includes(lead.status)) return;
     try {
-      const text = await file.text();
-      const parsedLeads = parseLeadCsv(text);
-      if (!parsedLeads.length) {
-        setToast({ message: 'Imported: 0 | Skipped duplicate: 0 | Failed: 0', type: 'error' });
-        return;
-      }
-
-      const currentLeads = await loadSalesLeadsFromSupabase();
-      const phoneKeys = new Set(
-        currentLeads
-          .map((lead) => normalizeMalaysiaPhone(lead.phone))
-          .filter(Boolean)
-      );
-      const companyAreaKeys = new Set(
-        currentLeads.map((lead) => `${lead.companyName.trim().toLowerCase()}|${lead.area.trim().toLowerCase()}`)
-      );
-
-      for (const lead of parsedLeads) {
-        if (!lead.companyName.trim()) {
-          failed += 1;
-          continue;
-        }
-
-        const phoneKey = normalizeMalaysiaPhone(lead.phone);
-        const companyAreaKey = `${lead.companyName.trim().toLowerCase()}|${lead.area.trim().toLowerCase()}`;
-        const isDuplicate = (Boolean(phoneKey) && phoneKeys.has(phoneKey)) || companyAreaKeys.has(companyAreaKey);
-
-        if (isDuplicate) {
-          skipped += 1;
-          continue;
-        }
-
-        try {
-          await createSalesLeadInSupabase({
-            ...lead,
-            status: 'New',
-            potentialValue: 0,
-            actualRevenue: 0,
-            sampleStatus: 'Not Started',
-            whatsappReady: Boolean(phoneKey),
-            messagesSent: 0
-          });
-          imported += 1;
-          if (phoneKey) phoneKeys.add(phoneKey);
-          companyAreaKeys.add(companyAreaKey);
-        } catch (error) {
-          console.error('CSV lead import error:', error);
-          failed += 1;
-        }
-      }
-
-      const refreshedLeads = await loadSalesLeadsFromSupabase();
-      setLeads(refreshedLeads);
-      setSelectedLeadId(refreshedLeads[0]?.id || null);
-      setLoadError('');
+      const saved = await recordSalesLeadWhatsAppContact(lead, today, dateAfterDays(3));
+      setLeads((current) => current.map((item) => item.id === saved.id ? saved : item));
+      await logActivity(lead, 'WhatsApp Sent', 'Corporate outreach message opened');
       notifySalesDataChanged();
-      setToast({
-        message: `Imported: ${imported} | Skipped duplicate: ${skipped} | Failed: ${failed}`,
-        type: failed > 0 ? 'info' : 'success'
-      });
+      setToast({ message: 'WhatsApp opened and follow-up set for 3 days.', type: 'success' });
     } catch (error) {
-      console.error('CSV import error:', error);
-      setToast({
-        message: `Imported: ${imported} | Skipped duplicate: ${skipped} | Failed: ${Math.max(failed, 1)}`,
-        type: 'error'
-      });
-    } finally {
-      setIsImporting(false);
-    }
-  };
-
-  const archiveLead = async (lead: SalesLead) => {
-    try {
-      await recordActivity(lead.id, 'Archive Lead', `Lead archived: ${lead.companyName}`);
-      await archiveSalesLeadInSupabase(lead);
-      if (drawerLeadId === lead.id) setDrawerLeadId(null);
-      await refreshSalesCRMData();
-      setToast({ message: 'Lead archived successfully', type: 'success' });
-    } catch (error) {
-      console.error('Archive lead error:', error);
-      setToast({ message: 'Failed to archive lead', type: 'error' });
-    }
-  };
-
-  const deleteLeads = async (leadIds: Array<number | string>) => {
-    await deleteSalesLeadsFromSupabase(leadIds, getCurrentUserLabel());
-    await refreshSalesCRMData();
-  };
-
-  const confirmDeleteLead = async () => {
-    if (!leadPendingDelete?.id) {
-      setToast({ message: 'Failed to delete lead', type: 'error' });
-      return;
-    }
-
-    setIsDeleting(true);
-    try {
-      await deleteLeads([leadPendingDelete.id]);
-      if (drawerLeadId === leadPendingDelete.id) setDrawerLeadId(null);
-      setLeadPendingDelete(null);
-      setToast({ message: 'Lead deleted successfully', type: 'success' });
-    } catch (error) {
-      console.error('Delete lead error:', error);
-      setToast({ message: 'Failed to delete lead', type: 'error' });
-    } finally {
-      setIsDeleting(false);
-    }
-  };
-
-  const updateSelectedStatus = (status: SalesLeadStatus) => {
-    if (!selectedLead) return;
-    moveLeadToStatus(selectedLead, status);
-  };
-
-  const addNote = () => {
-    if (!selectedLead || !noteDraft.trim()) return;
-    const notes = `${todayKey()}: ${noteDraft.trim()}\n${selectedLead.notes || ''}`.trim();
-    const note = noteDraft.trim();
-    persistUpdatedLead({ ...selectedLead, notes, lastContactDate: todayKey() })
-      .then(() => recordActivity(selectedLead.id, 'Note Added', note))
-      .catch(() => undefined);
-    setNoteDraft('');
-  };
-
-  const createFollowUpTask = async (lead: SalesLead, task: Pick<FollowUpTask, 'title' | 'description' | 'dueDate'>) => {
-    try {
-      if (!lead.id) throw new Error('Lead ID missing.');
-      const created = await createFollowUpTaskInSupabase({
-        leadId: lead.id,
-        ...task,
-        followUpDate: task.dueDate,
-        status: 'Pending'
-      });
-      await createLeadActivityInSupabase({
-        leadId: lead.id,
-        activityType: 'Follow-up Created',
-        description: `${created.title} due ${created.dueDate}`,
-        performedBy: getCurrentUserLabel()
-      });
-      await refreshSalesCRMData();
-      notifyFollowUpTasksChanged();
-      setToast({ message: 'Follow-up task created.', type: 'success' });
-    } catch (error) {
-      console.error('Follow-up task create error:', error);
-      setToast({ message: 'Failed to create follow-up task.', type: 'error' });
-      throw error;
-    }
-  };
-
-  const openWhatsApp = async (lead: SalesLead, message = corporateLeadsWhatsAppMessage) => {
-    const phone = normalizeMalaysiaPhone(lead.phone);
-    if (!phone) {
-      setToast({ message: 'Phone number missing.', type: 'error' });
-      return;
-    }
-
-    window.open(`https://wa.me/${phone}?text=${encodeURIComponent(message)}`, '_blank', 'noopener,noreferrer');
-
-    try {
-      await updateSalesLeadInSupabase({
-        ...lead,
-        status: 'Contacted',
-        messagesSent: lead.messagesSent + 1,
-        whatsappReady: true,
-        lastContactDate: todayKey()
-      });
-      await createLeadActivityInSupabase({
-        leadId: lead.id || '',
-        activityType: 'WhatsApp Sent',
-        description: 'Outreach message opened',
-        performedBy: getCurrentUserLabel()
-      });
-      await refreshSalesCRMData();
-      setToast({ message: 'WhatsApp outreach opened.', type: 'success' });
-    } catch (error) {
-      console.error('WhatsApp outreach error:', error);
-      await refreshSalesCRMData().catch(() => undefined);
+      console.error('Lead Center WhatsApp update error:', error);
       setToast({ message: 'WhatsApp opened, but CRM update failed.', type: 'error' });
     }
   };
 
-  const openTemplateEngine = (lead: SalesLead) => {
-    setTemplateLead(lead);
-    setSelectedTemplate('First Outreach');
-    setGeneratedMessage(generateWhatsAppMessage(lead, 'First Outreach'));
-  };
-
-  const generateSelectedTemplate = async () => {
-    if (!templateLead) return;
-    const message = generateWhatsAppMessage(templateLead, selectedTemplate);
-    setGeneratedMessage(message);
-    await recordActivity(
-      templateLead.id,
-      'WhatsApp Template Generated',
-      `${selectedTemplate} template generated`
+  const openSuggestedReply = (lead: SalesLead) => {
+    const url = buildCorporateWhatsAppUrl(
+      lead.phone,
+      buildLeadFollowUpReplyMessage(lead.contactPerson)
     );
-    notifySalesDataChanged();
-    setToast({ message: 'WhatsApp message generated.', type: 'success' });
+    if (!url) {
+      setToast({ message: 'Valid Malaysian mobile number missing.', type: 'error' });
+      return;
+    }
+
+    window.open(url, '_blank', 'noopener,noreferrer');
+    setToast({ message: 'Follow-up reply prepared for staff review.', type: 'info' });
   };
 
-  const openLeadDrawer = (lead: SalesLead) => {
-    setSelectedLeadId(lead.id || null);
-    setDrawerLeadId(lead.id || null);
+  const openQuotation = (lead: SalesLead) => {
+    localStorage.setItem('lbl_selected_sales_lead_id', String(lead.id || ''));
+    onNavigate?.('quotations');
+  };
+
+  const openCreateLead = () => {
+    setLeadDraft(blankLead());
+    setShowLeadForm(true);
+  };
+
+  const saveLead = async () => {
+    if (!leadDraft.companyName.trim()) {
+      setToast({ message: 'Company name is required.', type: 'error' });
+      return;
+    }
+    setSaving(true);
+    try {
+      if (leadDraft.id) {
+        const saved = await updateSalesLeadInSupabase(leadDraft);
+        setLeads((current) => current.map((lead) => lead.id === saved.id ? saved : lead));
+        await logActivity(saved, 'Lead Updated', `${saved.companyName} details updated`);
+      } else {
+        const saved = await createSalesLeadInSupabase(leadDraft);
+        setLeads((current) => [saved, ...current]);
+        await logActivity(saved, 'Lead Created', `${saved.companyName} added to Lead Center`);
+      }
+      setShowLeadForm(false);
+      notifySalesDataChanged();
+      setToast({ message: 'Lead saved successfully.', type: 'success' });
+    } catch (error) {
+      console.error('Lead save error:', error);
+      setToast({ message: 'Failed to save lead.', type: 'error' });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const importCsv = async (file: File) => {
+    setImporting(true);
+    let imported = 0;
+    let skipped = 0;
+    let failed = 0;
+    try {
+      const candidates = parseLeadCsv(await file.text());
+      const phones = new Set(leads.map((lead) => normalizeMalaysiaMobile(lead.phone)).filter(Boolean));
+      const companyAreas = new Set(leads.map((lead) => `${lead.companyName.trim().toLowerCase()}|${lead.area.trim().toLowerCase()}`));
+      for (const candidate of candidates) {
+        const phone = normalizeMalaysiaMobile(candidate.phone);
+        const companyArea = `${candidate.companyName.trim().toLowerCase()}|${candidate.area.trim().toLowerCase()}`;
+        if ((phone && phones.has(phone)) || companyAreas.has(companyArea)) {
+          skipped += 1;
+          continue;
+        }
+        try {
+          const saved = await createSalesLeadInSupabase(candidate);
+          setLeads((current) => [saved, ...current]);
+          if (phone) phones.add(phone);
+          companyAreas.add(companyArea);
+          imported += 1;
+        } catch (error) {
+          console.error('Lead CSV row import error:', error);
+          failed += 1;
+        }
+      }
+      notifySalesDataChanged();
+      setToast({ message: `Imported: ${imported} | Skipped duplicate: ${skipped} | Failed: ${failed}`, type: failed ? 'info' : 'success' });
+    } catch (error) {
+      console.error('Lead CSV import error:', error);
+      setToast({ message: 'CSV import failed.', type: 'error' });
+    } finally {
+      setImporting(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
+  const scheduleFollowUp = async (lead: SalesLead, dueDate: string, note: string) => {
+    if (!lead.id || !dueDate) return;
+    setSaving(true);
+    try {
+      const task = await createFollowUpTaskInSupabase({
+        leadId: lead.id,
+        leadName: lead.companyName,
+        title: 'Sales follow-up',
+        description: note || 'Follow up with corporate lead.',
+        followUpDate: dueDate,
+        dueDate,
+        status: 'Pending'
+      });
+      const saved = await updateSalesLeadInSupabase({ ...lead, nextFollowUpDate: dueDate });
+      setFollowUps((current) => [...current, task].sort((a, b) => a.dueDate.localeCompare(b.dueDate)));
+      setLeads((current) => current.map((item) => item.id === saved.id ? saved : item));
+      await logActivity(lead, 'Follow-up Created', `Follow-up scheduled for ${dueDate}`);
+      notifyFollowUpTasksChanged();
+      notifySalesDataChanged();
+      setToast({ message: 'Follow-up scheduled.', type: 'success' });
+    } catch (error) {
+      console.error('Lead follow-up error:', error);
+      setToast({ message: 'Failed to schedule follow-up.', type: 'error' });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const completeTask = async (task: FollowUpTask) => {
+    if (!task.id) return;
+    try {
+      const saved = await completeFollowUpTaskInSupabase(task.id);
+      setFollowUps((current) => current.map((item) => item.id === saved.id ? saved : item));
+      notifyFollowUpTasksChanged();
+      setToast({ message: 'Follow-up completed.', type: 'success' });
+    } catch (error) {
+      console.error('Complete follow-up error:', error);
+      setToast({ message: 'Failed to complete follow-up.', type: 'error' });
+    }
+  };
+
+  const archiveLead = async (lead: SalesLead) => {
+    if (!window.confirm(`Archive ${lead.companyName}?`)) return;
+    try {
+      await archiveSalesLeadInSupabase(lead);
+      setLeads((current) => current.filter((item) => item.id !== lead.id));
+      setSelectedLeadId(null);
+      notifySalesDataChanged();
+      setToast({ message: 'Lead archived.', type: 'success' });
+    } catch (error) {
+      console.error('Archive lead error:', error);
+      setToast({ message: 'Failed to archive lead.', type: 'error' });
+    }
+  };
+
+  const deleteLead = async (lead: SalesLead) => {
+    if (!lead.id || !window.confirm(`Delete ${lead.companyName}? This cannot be undone.`)) return;
+    try {
+      await deleteSalesLeadsFromSupabase([lead.id], getCurrentUserLabel());
+      setLeads((current) => current.filter((item) => item.id !== lead.id));
+      setSelectedLeadId(null);
+      notifySalesDataChanged();
+      setToast({ message: 'Lead deleted successfully.', type: 'success' });
+    } catch (error) {
+      console.error('Delete lead error:', error);
+      setToast({ message: 'Failed to delete lead.', type: 'error' });
+    }
   };
 
   return (
-    <div className="design-linear-page space-y-5">
-      {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
+    <div className="space-y-4 text-[#F8FAFC]">
+      {toast ? <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} /> : null}
 
-      <section className="ds-hero p-5 md:p-6">
-        <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
+      <header className="rounded-xl border border-[#334155] bg-[#111111] p-5">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div>
-            <p className="ds-eyebrow">Corporate Leads</p>
-            <h3 className="ds-page-title mt-2">Sales Command Center</h3>
-            <p className="ds-page-copy mt-2 max-w-3xl">
-              Manage corporate, school, hotel, wedding and event leads in one focused pipeline.
-            </p>
+            <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-[#C8A96B]">Sales Operations</p>
+            <h1 className="mt-2 text-2xl font-semibold text-white">Lead Center</h1>
+            <p className="mt-2 max-w-2xl text-sm text-[#94A3B8]">Contact, follow up, quote and close corporate opportunities from one focused workspace.</p>
           </div>
-          <div className="flex flex-wrap gap-3">
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".csv,text/csv"
-              className="hidden"
-              onChange={(event) => {
-                const file = event.target.files?.[0];
-                if (file) handleCsvImport(file);
-                event.currentTarget.value = '';
-              }}
-            />
-            <button
-              onClick={() => fileInputRef.current?.click()}
-              disabled={isImporting}
-              className="ds-primary-button px-4 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {isImporting ? 'Importing...' : 'Import Leads'}
-            </button>
-            <div className="ds-secondary-button flex items-center px-4 text-[#8a8f98]">Source: Supabase</div>
-          </div>
-        </div>
-      </section>
-
-      {loadError && (
-        <section className="rounded-[24px] border border-rose-500/20 bg-rose-500/10 p-5">
-          <p className="text-xs uppercase tracking-[0.22em] text-rose-200">Supabase Connection Error</p>
-          <p className="mt-2 text-sm text-rose-100">{loadError}</p>
-        </section>
-      )}
-
-      <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <KpiTile label="Need Contact Today" value={kpis.needContactToday} note="New leads awaiting first outreach" tone="green" />
-        <KpiTile label="Follow Up Today" value={kpis.followUpToday} note="Next follow-up is today" tone="gold" />
-        <KpiTile label="Hot Leads" value={automationKpis.hot} note="Hot priority or score 80+" tone="red" />
-        <KpiTile label="Overdue Leads" value={kpis.overdueLeads} note="Past follow-up date" tone="blue" />
-      </section>
-
-      <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-6">
-        {[
-          ['New', kpis.new],
-          ['Contacted', kpis.contacted],
-          ['Interested', kpis.interested],
-          ['Quoted', kpis.quoted],
-          ['Won', kpis.won],
-          ['Lost', kpis.lost]
-        ].map(([label, value]) => (
-          <KpiTile key={label} label={String(label)} value={value as number} note="Pipeline total" />
-        ))}
-      </section>
-
-      <section className="ds-card rounded-xl border border-[#334155] bg-[#111111] p-4">
-        <div className="grid gap-3 lg:grid-cols-[minmax(220px,1.2fr)_repeat(4,minmax(150px,1fr))]">
-          <input value={searchTerm} onChange={(event) => setSearchTerm(event.target.value)} placeholder="Search company, contact, phone" className="h-11 rounded-2xl border border-[#334155] bg-[#0F172A] px-4 text-sm text-white outline-none placeholder:text-slate-500 focus:border-gold/40" />
-          <select value={leadTypeFilter} onChange={(event) => setLeadTypeFilter(event.target.value as 'All' | SalesLeadType)} className="h-11 rounded-2xl border border-[#334155] bg-[#0F172A] px-4 text-sm text-white outline-none focus:border-gold/40">
-            <option>All</option>
-            {leadTypes.map((type) => <option key={type}>{type}</option>)}
-          </select>
-          <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as 'All' | SalesLeadStatus)} className="h-11 rounded-2xl border border-[#334155] bg-[#0F172A] px-4 text-sm text-white outline-none focus:border-gold/40">
-            <option>All</option>
-            {statuses.map((status) => <option key={status}>{status}</option>)}
-          </select>
-          <select value={areaFilter} onChange={(event) => setAreaFilter(event.target.value)} className="h-11 rounded-2xl border border-[#334155] bg-[#0F172A] px-4 text-sm text-white outline-none focus:border-gold/40">
-            <option>All</option>
-            {areas.map((area) => <option key={area}>{area}</option>)}
-          </select>
-          <select value={priorityFilter} onChange={(event) => setPriorityFilter(event.target.value as PriorityFilter)} className="h-11 rounded-2xl border border-[#334155] bg-[#0F172A] px-4 text-sm text-white outline-none focus:border-gold/40">
-            <option>All</option>
-            <option>Hot</option>
-            <option>Warm</option>
-            <option>Cold</option>
-          </select>
-          <select value={sourceFilter} onChange={(event) => setSourceFilter(event.target.value)} className="h-11 rounded-2xl border border-[#334155] bg-[#0F172A] px-4 text-sm text-white outline-none focus:border-gold/40 lg:col-start-5">
-            <option>All</option>
-            {leadSources.map((leadSource) => <option key={leadSource}>{leadSource}</option>)}
-          </select>
-        </div>
-        <div className="mt-4 flex flex-wrap gap-2">
-          {quickFilters.map((filter) => (
-            <button
-              key={filter}
-              onClick={() => setQuickFilter(filter)}
-              className={`rounded-full border px-4 py-2 text-xs font-semibold transition ${
-                quickFilter === filter ? 'border-gold/60 bg-gold text-charcoal' : 'border-[#334155] bg-[#0F172A] text-slate-300 hover:border-gold/40'
-              }`}
-            >
-              {filter}
-            </button>
-          ))}
-        </div>
-      </section>
-
-      <section className="ds-card grid gap-3 rounded-xl border border-white/10 bg-[#141414] p-4 md:grid-cols-2 xl:grid-cols-4">
-        <input value={draftLead.companyName} onChange={(event) => setDraftLead({ ...draftLead, companyName: event.target.value })} placeholder="Company Name" className="h-11 rounded-2xl border border-white/10 bg-[#0f0f0f] px-4 text-sm text-white outline-none placeholder:text-slate-600 focus:border-gold/40" />
-        <select value={draftLead.leadType} onChange={(event) => setDraftLead({ ...draftLead, leadType: event.target.value as SalesLeadType })} className="h-11 rounded-2xl border border-white/10 bg-[#0f0f0f] px-4 text-sm text-white outline-none focus:border-gold/40">
-          {leadTypes.map((type) => <option key={type}>{type}</option>)}
-        </select>
-        <input value={draftLead.industry} onChange={(event) => setDraftLead({ ...draftLead, industry: event.target.value })} placeholder="Industry" className="h-11 rounded-2xl border border-white/10 bg-[#0f0f0f] px-4 text-sm text-white outline-none placeholder:text-slate-600 focus:border-gold/40" />
-        <input value={draftLead.contactPerson} onChange={(event) => setDraftLead({ ...draftLead, contactPerson: event.target.value })} placeholder="Contact Person" className="h-11 rounded-2xl border border-white/10 bg-[#0f0f0f] px-4 text-sm text-white outline-none placeholder:text-slate-600 focus:border-gold/40" />
-        <input value={draftLead.phone} onChange={(event) => setDraftLead({ ...draftLead, phone: event.target.value })} placeholder="Phone" className="h-11 rounded-2xl border border-white/10 bg-[#0f0f0f] px-4 text-sm text-white outline-none placeholder:text-slate-600 focus:border-gold/40" />
-        <input value={draftLead.email} onChange={(event) => setDraftLead({ ...draftLead, email: event.target.value })} placeholder="Email" className="h-11 rounded-2xl border border-white/10 bg-[#0f0f0f] px-4 text-sm text-white outline-none placeholder:text-slate-600 focus:border-gold/40" />
-        <input value={draftLead.website} onChange={(event) => setDraftLead({ ...draftLead, website: event.target.value })} placeholder="Website" className="h-11 rounded-2xl border border-white/10 bg-[#0f0f0f] px-4 text-sm text-white outline-none placeholder:text-slate-600 focus:border-gold/40" />
-        <input value={draftLead.facebook} onChange={(event) => setDraftLead({ ...draftLead, facebook: event.target.value })} placeholder="Facebook" className="h-11 rounded-2xl border border-white/10 bg-[#0f0f0f] px-4 text-sm text-white outline-none placeholder:text-slate-600 focus:border-gold/40" />
-        <input value={draftLead.instagram} onChange={(event) => setDraftLead({ ...draftLead, instagram: event.target.value })} placeholder="Instagram" className="h-11 rounded-2xl border border-white/10 bg-[#0f0f0f] px-4 text-sm text-white outline-none placeholder:text-slate-600 focus:border-gold/40" />
-        <input value={draftLead.area} onChange={(event) => setDraftLead({ ...draftLead, area: event.target.value })} placeholder="Area" className="h-11 rounded-2xl border border-white/10 bg-[#0f0f0f] px-4 text-sm text-white outline-none placeholder:text-slate-600 focus:border-gold/40" />
-        <input value={draftLead.leadSource} onChange={(event) => setDraftLead({ ...draftLead, leadSource: event.target.value })} placeholder="Lead Source" className="h-11 rounded-2xl border border-white/10 bg-[#0f0f0f] px-4 text-sm text-white outline-none placeholder:text-slate-600 focus:border-gold/40" />
-        <input value={draftLead.notes} onChange={(event) => setDraftLead({ ...draftLead, notes: event.target.value })} placeholder="Notes" className="h-11 rounded-2xl border border-white/10 bg-[#0f0f0f] px-4 text-sm text-white outline-none placeholder:text-slate-600 focus:border-gold/40" />
-        <label className="flex h-11 items-center gap-3 rounded-2xl border border-white/10 bg-[#0f0f0f] px-4 text-xs text-slate-500">
-          Last contact
-          <input type="date" value={draftLead.lastContactDate} onChange={(event) => setDraftLead({ ...draftLead, lastContactDate: event.target.value })} className="min-w-0 flex-1 bg-transparent text-sm text-white outline-none" />
-        </label>
-        <label className="flex h-11 items-center gap-3 rounded-2xl border border-white/10 bg-[#0f0f0f] px-4 text-xs text-slate-500">
-          Next follow-up
-          <input type="date" value={draftLead.nextFollowUpDate} onChange={(event) => setDraftLead({ ...draftLead, nextFollowUpDate: event.target.value })} className="min-w-0 flex-1 bg-transparent text-sm text-white outline-none" />
-        </label>
-        <button onClick={addLead} className="ds-primary-button h-11 px-4">Add Lead</button>
-      </section>
-
-      <section className="grid gap-5 2xl:grid-cols-[minmax(0,1.55fr)_minmax(340px,0.75fr)]">
-        <div className="space-y-5">
-          <section className="ds-card rounded-xl border border-[#334155] bg-[#1E293B] p-5">
-            <div className="flex flex-col gap-2 border-b border-[#334155] pb-4 md:flex-row md:items-end md:justify-between">
-              <div>
-                <p className="text-xs uppercase tracking-[0.24em] text-softGold">Active Leads</p>
-                <h4 className="mt-2 text-xl font-semibold text-white">Who to contact next</h4>
-              </div>
-              <p className="text-sm text-slate-400">Showing {visibleActiveLeads.length} of {filteredLeads.length}</p>
-            </div>
-
-            <div className="mt-5 grid gap-4 lg:grid-cols-2 2xl:grid-cols-3">
-              {visibleActiveLeads.map((lead) => (
-                <SalesLeadCard
-                  key={lead.id}
-                  lead={lead}
-                  selected={String(selectedLeadId) === String(lead.id)}
-                  onSelect={() => {
-                    setSelectedLeadId(lead.id || null);
-                    setIsSelectedPanelExpanded(false);
-                  }}
-                  onOpenWhatsApp={openWhatsApp}
-                  onGenerateWhatsApp={openTemplateEngine}
-                  onFollowUp={(item) => {
-                    setSelectedLeadId(item.id || null);
-                    setIsSelectedPanelExpanded(true);
-                  }}
-                  onViewDetails={(item) => {
-                    setSelectedLeadId(item.id || null);
-                    openLeadDrawer(item);
-                  }}
-                  onArchive={archiveLead}
-                  onDelete={setLeadPendingDelete}
-                />
-              ))}
-
-              {!loadError && filteredLeads.length === 0 && (
-                <div className="rounded-xl border border-dashed border-[#334155] bg-[#0F172A] p-8 text-center text-sm text-slate-400 lg:col-span-2 2xl:col-span-3">
-                  No active leads match the current filters.
-                </div>
-              )}
-            </div>
-
-            {filteredLeads.length > visibleActiveLeads.length && (
-              <button
-                onClick={() => setVisibleActiveCount((count) => count + 30)}
-                className="ds-secondary-button mt-5 w-full px-4"
-              >
-                Load More
-              </button>
-            )}
-          </section>
-
-          <CollapsibleBlock title="Analytics Summary" count={5} expanded={expandedSections.analytics} onToggle={() => toggleSection('analytics')}>
-            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
-              <MiniStat label="Warm Leads" value={automationKpis.warm} />
-              <MiniStat label="Cold Leads" value={automationKpis.cold} />
-              <MiniStat label="Auto Follow-ups" value={automationKpis.autoFollowUps} />
-              <MiniStat label="Completed Tasks" value={followUpKpis.completed} />
-              <MiniStat label="Sample Scheduled" value={kpis.sample} />
-            </div>
-            <div className="mt-4 grid gap-3 xl:grid-cols-3">
-              <MiniStat label="Sample Requested" value={sampleBoxStats.requested} />
-              <MiniStat label="Messages Sent" value={whatsappStats.sent} />
-              <MiniStat label="Pending Outreach" value={whatsappStats.pending} />
-            </div>
-          </CollapsibleBlock>
-
-          <LeadArchiveList title="Won Leads" leads={wonLeads} expanded={expandedSections.won} onToggle={() => toggleSection('won')} onView={openLeadDrawer} />
-          <LeadArchiveList title="Lost Leads" leads={lostLeads} expanded={expandedSections.lost} onToggle={() => toggleSection('lost')} onView={openLeadDrawer} />
-          <LeadArchiveList title="Archived Leads" leads={archivedLeads} expanded={expandedSections.archived} onToggle={() => toggleSection('archived')} onView={openLeadDrawer} />
-        </div>
-
-        <SelectedLeadPanel
-          lead={selectedLead}
-          noteDraft={noteDraft}
-          setNoteDraft={setNoteDraft}
-          onAddNote={addNote}
-          onOpenWhatsApp={openWhatsApp}
-          onGenerateWhatsApp={openTemplateEngine}
-          onStatusChange={updateSelectedStatus}
-          onUpdate={persistUpdatedLead}
-          onArchive={archiveLead}
-          onDelete={setLeadPendingDelete}
-          onEdit={openLeadDrawer}
-          onCreateFollowUp={createFollowUpTask}
-          onViewHistory={openLeadDrawer}
-          expanded={isSelectedPanelExpanded}
-          setExpanded={setIsSelectedPanelExpanded}
-        />
-      </section>
-
-      {drawerLeadId && (() => {
-        const drawerLead = leads.find((lead) => lead.id === drawerLeadId) || null;
-        if (!drawerLead) return null;
-        return (
-          <LeadDetailDrawer
-            lead={drawerLead}
-            activities={activities.filter((activity) => String(activity.leadId) === String(drawerLead.id))}
-            onClose={() => setDrawerLeadId(null)}
-            onOpenWhatsApp={openWhatsApp}
-            onGenerateWhatsApp={openTemplateEngine}
-            onStatusChange={(status) => {
-              moveLeadToStatus(drawerLead, status);
-            }}
-            onUpdate={persistUpdatedLead}
-            onArchive={archiveLead}
-            onDelete={setLeadPendingDelete}
-          />
-        );
-      })()}
-
-      {templateLead && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm">
-          <div role="dialog" aria-modal="true" aria-labelledby="whatsapp-template-title" className="ds-card w-full max-w-2xl rounded-xl border border-gold/20 bg-[#141414] p-6">
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <p className="text-xs uppercase tracking-[0.24em] text-softGold">WhatsApp Template Engine</p>
-                <h3 id="whatsapp-template-title" className="mt-2 text-2xl font-semibold text-white">{templateLead.companyName}</h3>
-              </div>
-              <button onClick={() => setTemplateLead(null)} className="rounded-2xl border border-white/10 px-4 py-2 text-sm text-slate-300 transition hover:bg-white/5">Close</button>
-            </div>
-
-            <div className="mt-5 grid gap-3 sm:grid-cols-[1fr_auto]">
-              <select
-                value={selectedTemplate}
-                onChange={(event) => {
-                  const template = event.target.value as WhatsAppTemplate;
-                  setSelectedTemplate(template);
-                  setGeneratedMessage(generateWhatsAppMessage(templateLead, template));
-                }}
-                className="h-11 rounded-2xl border border-white/10 bg-[#0f0f0f] px-4 text-sm text-white outline-none focus:border-gold/40"
-              >
-                {whatsappTemplates.map((template) => <option key={template}>{template}</option>)}
-              </select>
-              <button onClick={generateSelectedTemplate} className="rounded-2xl bg-gold px-5 py-3 text-sm font-semibold text-charcoal transition hover:bg-softGold">
-                Generate Message
-              </button>
-            </div>
-
-            <textarea
-              value={generatedMessage}
-              onChange={(event) => setGeneratedMessage(event.target.value)}
-              rows={11}
-              className="mt-4 w-full rounded-[20px] border border-white/10 bg-[#0f0f0f] px-4 py-4 text-sm leading-6 text-white outline-none focus:border-gold/40"
-            />
-
-            <div className="mt-5 flex flex-wrap justify-end gap-3">
-              <button
-                onClick={async () => {
-                  await navigator.clipboard.writeText(generatedMessage);
-                  setToast({ message: 'Message copied.', type: 'success' });
-                }}
-                className="rounded-2xl border border-white/10 px-4 py-3 text-sm font-semibold text-slate-200 transition hover:bg-white/5"
-              >
-                Copy Message
-              </button>
-              <button
-                disabled={!normalizeMalaysiaPhone(templateLead.phone)}
-                onClick={() => openWhatsApp(templateLead, generatedMessage)}
-                className="rounded-2xl bg-emerald-500/20 px-4 py-3 text-sm font-semibold text-emerald-100 transition hover:bg-emerald-500/30 disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                Open WhatsApp
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {leadPendingDelete && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm">
-          <div role="dialog" aria-modal="true" aria-labelledby="delete-lead-title" className="ds-card w-full max-w-md rounded-xl border border-white/10 bg-[#141414] p-6">
-            <p className="text-xs uppercase tracking-[0.22em] text-rose-300">Permanent Action</p>
-            <h3 id="delete-lead-title" className="mt-2 text-2xl font-semibold text-white">Delete Lead</h3>
-            <p className="mt-3 text-sm leading-6 text-slate-400">
-              Are you sure you want to delete this lead?
-            </p>
-            <p className="mt-2 text-sm font-semibold text-white">{leadPendingDelete.companyName}</p>
-            <div className="mt-6 flex justify-end gap-3">
-              <button
-                onClick={() => setLeadPendingDelete(null)}
-                disabled={isDeleting}
-                className="rounded-2xl border border-white/10 px-4 py-3 text-sm font-semibold text-slate-300 transition hover:bg-white/5 disabled:opacity-50"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={confirmDeleteLead}
-                disabled={isDeleting}
-                className="rounded-2xl bg-rose-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-rose-500 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {isDeleting ? 'Deleting...' : 'Delete Lead'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function KpiTile({ label, value, note, tone = 'gold' }: { label: string; value: number | string; note: string; tone?: 'gold' | 'green' | 'red' | 'blue' }) {
-  const toneClass = {
-    gold: 'text-softGold',
-    green: 'text-emerald-300',
-    red: 'text-rose-300',
-    blue: 'text-sky-300'
-  }[tone];
-
-  return (
-    <div className="ds-card rounded-xl border border-[#334155] bg-[#111111] p-4 transition">
-      <p className="text-xs uppercase tracking-[0.18em] text-slate-400">{label}</p>
-      <p className="mt-4 text-3xl font-semibold text-white">{value}</p>
-      <p className={`mt-2 text-xs ${toneClass}`}>{note}</p>
-    </div>
-  );
-}
-
-function CollapsibleBlock({
-  title,
-  count,
-  expanded,
-  onToggle,
-  children
-}: {
-  title: string;
-  count: number;
-  expanded: boolean;
-  onToggle: () => void;
-  children: React.ReactNode;
-}) {
-  const Icon = expanded ? ChevronUp : ChevronDown;
-  return (
-    <section className="ds-card rounded-xl border border-[#334155] bg-[#111111]">
-      <button onClick={onToggle} className="flex w-full items-center justify-between gap-4 px-5 py-4 text-left">
-        <div>
-          <p className="text-sm font-semibold text-white">{title}</p>
-          <p className="mt-1 text-xs text-slate-500">{count} items</p>
-        </div>
-        <span className="flex items-center gap-3">
-          <span className="rounded-full bg-gold/10 px-3 py-1 text-xs font-semibold text-softGold">{count}</span>
-          <Icon size={18} className="text-softGold" />
-        </span>
-      </button>
-      {expanded && <div className="border-t border-[#334155] p-5">{children}</div>}
-    </section>
-  );
-}
-
-function SalesLeadCard({
-  lead,
-  selected,
-  onSelect,
-  onOpenWhatsApp,
-  onGenerateWhatsApp,
-  onFollowUp,
-  onViewDetails,
-  onArchive,
-  onDelete
-}: {
-  lead: SalesLead;
-  selected: boolean;
-  onSelect: () => void;
-  onOpenWhatsApp: (lead: SalesLead) => void;
-  onGenerateWhatsApp: (lead: SalesLead) => void;
-  onFollowUp: (lead: SalesLead) => void;
-  onViewDetails: (lead: SalesLead) => void;
-  onArchive: (lead: SalesLead) => void;
-  onDelete: (lead: SalesLead) => void;
-}) {
-  return (
-    <article onClick={onSelect} className={`ds-card rounded-xl border bg-[#111111] p-4 transition ${selected ? 'border-[#5e6ad2] bg-[#141516]' : 'border-[#334155]'}`}>
-      <div className="flex items-start justify-between gap-4">
-        <div className="min-w-0">
-          <h5 className="truncate text-lg font-semibold text-white">{lead.companyName || 'Unnamed company'}</h5>
-          <p className="mt-1 text-sm text-slate-400">{lead.leadType} | {lead.industry || 'No industry'}</p>
-          <p className="mt-1 text-sm text-slate-400">{lead.area || 'No area'}</p>
-        </div>
-        <span className={`shrink-0 rounded-full border px-3 py-1 text-xs font-semibold ${priorityTone(lead.leadPriority)}`}>{lead.leadPriority}</span>
-      </div>
-
-      <div className="mt-4 grid gap-2 text-sm">
-        <p className="text-slate-300">{lead.contactPerson || 'No contact person'}</p>
-        <p className="text-slate-400">{lead.phone || 'No phone'}</p>
-      </div>
-
-      <div className="mt-4 flex flex-wrap gap-2">
-        <span className={`rounded-full border px-3 py-1 text-xs font-semibold ${statusTone(lead.status)}`}>{lead.status}</span>
-        <span className="rounded-full bg-white/5 px-3 py-1 text-xs text-slate-300">Score {lead.leadScore}</span>
-        {isDue(lead) && <span className="rounded-full bg-amber-500/10 px-3 py-1 text-xs font-semibold text-amber-200">Reminder</span>}
-      </div>
-
-      <p className="mt-4 text-xs uppercase tracking-[0.16em] text-slate-500">Next Follow-up</p>
-      <p className="mt-1 text-sm font-semibold text-white">{lead.nextFollowUpDate || 'Not scheduled'}</p>
-
-      <div className="mt-5 grid grid-cols-2 gap-2">
-        <button onClick={(event) => { event.stopPropagation(); onOpenWhatsApp(lead); }} className="rounded-2xl bg-emerald-500/20 px-3 py-2 text-xs font-semibold text-emerald-100 transition hover:bg-emerald-500/30">WhatsApp</button>
-        <button onClick={(event) => { event.stopPropagation(); onGenerateWhatsApp(lead); }} className="rounded-2xl border border-[#334155] bg-[#0F172A] px-3 py-2 text-xs font-semibold text-slate-200 transition hover:border-gold/30">Generate Message</button>
-        <button onClick={(event) => { event.stopPropagation(); onFollowUp(lead); }} className="rounded-2xl bg-gold/15 px-3 py-2 text-xs font-semibold text-softGold transition hover:bg-gold/25">Follow Up</button>
-        <button onClick={(event) => { event.stopPropagation(); onViewDetails(lead); }} className="rounded-2xl border border-[#334155] bg-white/5 px-3 py-2 text-xs font-semibold text-slate-300 transition hover:bg-white/10">View Details</button>
-      </div>
-
-      <div className="mt-3 grid grid-cols-2 gap-2 border-t border-[#334155] pt-3">
-        <button onClick={(event) => { event.stopPropagation(); onArchive(lead); }} className="rounded-2xl border border-gold/30 bg-gold/10 px-3 py-2 text-xs font-semibold text-softGold transition hover:bg-gold/20">Archive</button>
-        <button onClick={(event) => { event.stopPropagation(); onDelete(lead); }} className="rounded-2xl border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs font-semibold text-rose-200 transition hover:bg-rose-500/20">Delete</button>
-      </div>
-    </article>
-  );
-}
-
-function LeadArchiveList({
-  title,
-  leads,
-  expanded,
-  onToggle,
-  onView
-}: {
-  title: string;
-  leads: SalesLead[];
-  expanded: boolean;
-  onToggle: () => void;
-  onView: (lead: SalesLead) => void;
-}) {
-  return (
-    <CollapsibleBlock title={title} count={leads.length} expanded={expanded} onToggle={onToggle}>
-      <div className="space-y-2">
-        {leads.slice(0, 30).map((lead) => (
-          <div key={lead.id} className="flex flex-col gap-3 rounded-xl border border-[#334155] bg-[#0F172A] p-4 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <p className="font-semibold text-white">{lead.companyName}</p>
-              <p className="mt-1 text-sm text-slate-400">{lead.leadType} | {lead.area || 'No area'} | {lead.phone || 'No phone'}</p>
-            </div>
-            <button onClick={() => onView(lead)} className="rounded-2xl border border-gold/30 bg-gold/10 px-4 py-2 text-sm font-semibold text-softGold transition hover:bg-gold/20">View</button>
-          </div>
-        ))}
-        {leads.length === 0 && <p className="text-sm text-slate-500">No leads.</p>}
-      </div>
-    </CollapsibleBlock>
-  );
-}
-
-function SelectedLeadPanel({
-  lead,
-  noteDraft,
-  setNoteDraft,
-  onAddNote,
-  onOpenWhatsApp,
-  onGenerateWhatsApp,
-  onStatusChange,
-  onUpdate,
-  onArchive,
-  onDelete,
-  onEdit,
-  onCreateFollowUp,
-  onViewHistory,
-  expanded,
-  setExpanded
-}: {
-  lead: SalesLead | null;
-  noteDraft: string;
-  setNoteDraft: (value: string) => void;
-  onAddNote: () => void;
-  onOpenWhatsApp: (lead: SalesLead) => void;
-  onGenerateWhatsApp: (lead: SalesLead) => void;
-  onStatusChange: (status: SalesLeadStatus) => void;
-  onUpdate: (lead: SalesLead) => void;
-  onArchive: (lead: SalesLead) => void;
-  onDelete: (lead: SalesLead) => void;
-  onEdit: (lead: SalesLead) => void;
-  onCreateFollowUp: (lead: SalesLead, task: Pick<FollowUpTask, 'title' | 'description' | 'dueDate'>) => Promise<void>;
-  onViewHistory: (lead: SalesLead) => void;
-  expanded: boolean;
-  setExpanded: (value: boolean) => void;
-}) {
-  const [taskTitle, setTaskTitle] = useState('');
-  const [taskDescription, setTaskDescription] = useState('');
-  const [taskDueDate, setTaskDueDate] = useState(todayKey());
-  const [isCreatingTask, setIsCreatingTask] = useState(false);
-  const [detailBlocks, setDetailBlocks] = useState({
-    contact: true,
-    online: false,
-    crm: false,
-    notes: false
-  });
-  const toggleDetailBlock = (key: keyof typeof detailBlocks) => {
-    setDetailBlocks((current) => ({ ...current, [key]: !current[key] }));
-  };
-
-  if (!lead) {
-    return (
-      <aside className="ds-card rounded-xl border border-[#334155] bg-[#111111] p-5">
-        <p className="text-xs uppercase tracking-[0.24em] text-softGold">Selected Lead Panel</p>
-        <p className="mt-4 text-sm text-slate-400">Select a lead to view details.</p>
-      </aside>
-    );
-  }
-
-  if (!expanded) {
-    return (
-      <aside className="ds-card sticky top-4 rounded-xl border border-[#334155] bg-[#111111] p-5">
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <p className="text-xs uppercase tracking-[0.24em] text-softGold">Selected Lead Panel</p>
-            <h4 className="mt-2 text-2xl font-semibold text-white">{lead.companyName}</h4>
-            <p className="mt-2 text-sm text-slate-400">{lead.leadType} | {lead.area || 'No area'}</p>
-          </div>
-          <span className={`rounded-full border px-3 py-1 text-xs font-semibold ${priorityTone(lead.leadPriority)}`}>{lead.leadPriority}</span>
-        </div>
-
-        <div className="mt-5 grid gap-3">
-          <Info label="Phone" value={lead.phone || '-'} />
-          <Info label="Status" value={lead.status} />
-          <Info label="Lead Score" value={`${lead.leadScore} / 100`} />
-        </div>
-
-        <div className="mt-5 grid gap-2">
-          <button onClick={() => onOpenWhatsApp(lead)} className="rounded-2xl bg-emerald-500/20 px-4 py-3 text-sm font-semibold text-emerald-100 transition hover:bg-emerald-500/30">WhatsApp</button>
-          <button onClick={() => onGenerateWhatsApp(lead)} className="rounded-2xl border border-gold/30 bg-gold/10 px-4 py-3 text-sm font-semibold text-softGold transition hover:bg-gold/20">Generate Message</button>
-          <button onClick={() => setExpanded(true)} className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm font-semibold text-slate-200 transition hover:border-gold/30">Expand Details</button>
-        </div>
-      </aside>
-    );
-  }
-
-  return (
-    <aside className="ds-card sticky top-4 max-h-[calc(100vh-2rem)] overflow-y-auto rounded-xl border border-[#334155] bg-[#111111] p-5">
-      <div className="space-y-5">
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <p className="text-xs uppercase tracking-[0.24em] text-softGold">Selected Lead Panel</p>
-            <h4 className="mt-2 text-2xl font-semibold text-white">{lead.companyName}</h4>
-            <p className="mt-1 text-sm text-slate-400">{lead.contactPerson || 'No contact'} | {lead.phone || 'No phone'}</p>
-          </div>
-          <div className="flex flex-wrap justify-end gap-2">
-            <button onClick={() => setExpanded(false)} className="rounded-2xl border border-white/10 px-4 py-2 text-sm font-semibold text-slate-300 transition hover:bg-white/5">Collapse</button>
-            <button onClick={() => onOpenWhatsApp(lead)} className="rounded-2xl bg-emerald-500/10 px-4 py-2 text-sm font-semibold text-emerald-200 transition hover:bg-emerald-500/20">WhatsApp</button>
-            <button onClick={() => onGenerateWhatsApp(lead)} className="rounded-2xl border border-gold/30 bg-gold/10 px-4 py-2 text-sm font-semibold text-softGold transition hover:bg-gold/20">Generate Message</button>
-            <button onClick={() => onArchive(lead)} className="rounded-2xl border border-gold/40 bg-gold/10 px-4 py-2 text-sm font-semibold text-softGold transition hover:bg-gold/20">Archive Lead</button>
-            <button onClick={() => onDelete(lead)} className="rounded-2xl border border-rose-500/40 bg-rose-500/10 px-4 py-2 text-sm font-semibold text-rose-200 transition hover:bg-rose-500/20">Delete Lead</button>
-          </div>
-        </div>
-
-        <CollapsibleBlock title="Contact Info" count={4} expanded={detailBlocks.contact} onToggle={() => toggleDetailBlock('contact')}>
-          <div className="grid gap-3 sm:grid-cols-2">
-            <Info label="Contact Person" value={lead.contactPerson || 'No contact person'} />
-            <Info label="Phone" value={lead.phone || '-'} />
-            <Info label="Email" value={lead.email || '-'} />
-            <Info label="Area" value={lead.area || '-'} />
-          </div>
-        </CollapsibleBlock>
-
-        <CollapsibleBlock title="Online Presence" count={3} expanded={detailBlocks.online} onToggle={() => toggleDetailBlock('online')}>
-          <div className="grid gap-3">
-            <Info label="Website" value={lead.website || '-'} />
-            <Info label="Facebook" value={lead.facebook || '-'} />
-            <Info label="Instagram" value={lead.instagram || '-'} />
-          </div>
-        </CollapsibleBlock>
-
-        <CollapsibleBlock title="CRM Info" count={8} expanded={detailBlocks.crm} onToggle={() => toggleDetailBlock('crm')}>
-          <div className="grid gap-3 sm:grid-cols-2">
-            <Info label="Lead Type" value={lead.leadType} />
-            <Info label="Lead Source" value={lead.leadSource || '-'} />
-            <Info label="Potential Value" value={formatRM(lead.potentialValue)} />
-            <Info label="Actual Revenue" value={formatRM(lead.actualRevenue)} />
-            <Info label="Lead Score" value={`${lead.leadScore} / 100`} />
-            <Info label="Lead Priority" value={lead.leadPriority} />
-            <Info label="Last Contact" value={lead.lastContactDate || '-'} />
-            <Info label="Next Follow-up" value={lead.nextFollowUpDate || '-'} />
-          </div>
-        </CollapsibleBlock>
-
-        <div className="grid gap-3 sm:grid-cols-3">
-          <button onClick={() => onEdit(lead)} className="rounded-2xl border border-gold/30 bg-gold/10 px-4 py-3 text-sm font-semibold text-softGold transition hover:bg-gold/20">Edit Lead</button>
-          <button onClick={() => onViewHistory(lead)} className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm font-semibold text-slate-200 transition hover:border-gold/30">View Activity History</button>
-        </div>
-
-        <div className="rounded-[22px] border border-sky-500/20 bg-sky-500/[0.05] p-4">
-          <p className="text-xs uppercase tracking-[0.2em] text-sky-200">Create Follow-up Task</p>
-          <div className="mt-4 grid gap-3 sm:grid-cols-2">
-            <input value={taskTitle} onChange={(event) => setTaskTitle(event.target.value)} placeholder="Task Title" className="h-11 rounded-2xl border border-white/10 bg-[#0f0f0f] px-4 text-sm text-white outline-none placeholder:text-slate-600 focus:border-sky-500/40" />
-            <input type="date" value={taskDueDate} onChange={(event) => setTaskDueDate(event.target.value)} className="h-11 rounded-2xl border border-white/10 bg-[#0f0f0f] px-4 text-sm text-white outline-none focus:border-sky-500/40" />
-            <textarea value={taskDescription} onChange={(event) => setTaskDescription(event.target.value)} placeholder="Description" rows={3} className="rounded-2xl border border-white/10 bg-[#0f0f0f] px-4 py-3 text-sm text-white outline-none placeholder:text-slate-600 focus:border-sky-500/40 sm:col-span-2" />
-          </div>
-          <button
-            disabled={!taskTitle.trim() || !taskDueDate || isCreatingTask}
-            onClick={async () => {
-              setIsCreatingTask(true);
-              try {
-                await onCreateFollowUp(lead, {
-                  title: taskTitle.trim(),
-                  description: taskDescription.trim(),
-                  dueDate: taskDueDate
-                });
-                setTaskTitle('');
-                setTaskDescription('');
-                setTaskDueDate(todayKey());
-              } catch {
-                // Parent handler displays the Supabase error toast.
-              } finally {
-                setIsCreatingTask(false);
-              }
-            }}
-            className="mt-4 rounded-2xl bg-sky-500/20 px-4 py-3 text-sm font-semibold text-sky-100 transition hover:bg-sky-500/30 disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            {isCreatingTask ? 'Creating...' : 'Create Follow-up Task'}
-          </button>
-        </div>
-
-        <div className="grid gap-3 sm:grid-cols-2">
-          <label className="text-xs uppercase tracking-[0.18em] text-slate-500">
-            Next Follow Up
-            <input type="date" value={lead.nextFollowUpDate || ''} onChange={(event) => onUpdate({ ...lead, nextFollowUpDate: event.target.value })} className="mt-2 h-11 w-full rounded-2xl border border-white/10 bg-[#0f0f0f] px-4 text-sm text-white outline-none focus:border-gold/40" />
-          </label>
-          <label className="text-xs uppercase tracking-[0.18em] text-slate-500">
-            Actual Revenue
-            <input value={lead.actualRevenue || ''} onChange={(event) => onUpdate({ ...lead, actualRevenue: toNumber(event.target.value) })} className="mt-2 h-11 w-full rounded-2xl border border-white/10 bg-[#0f0f0f] px-4 text-sm text-white outline-none focus:border-gold/40" />
-          </label>
-        </div>
-
-        <div>
-          <p className="mb-3 text-xs uppercase tracking-[0.2em] text-softGold">Status Pipeline</p>
           <div className="flex flex-wrap gap-2">
-            {statuses.map((status) => (
-              <button key={status} onClick={() => onStatusChange(status)} className={`rounded-2xl border px-3 py-2 text-xs font-semibold transition ${lead.status === status ? 'border-gold/50 bg-gold text-charcoal' : 'border-white/10 bg-white/5 text-slate-300 hover:border-gold/30'}`}>
-                {status}
-              </button>
-            ))}
+            <input ref={fileInputRef} type="file" accept=".csv,text/csv" className="hidden" onChange={(event) => {
+              const file = event.target.files?.[0];
+              if (file) void importCsv(file);
+            }} />
+            <button type="button" onClick={() => fileInputRef.current?.click()} disabled={importing} className="flex h-10 items-center gap-2 rounded-lg border border-[#334155] bg-[#0F172A] px-3 text-xs font-semibold text-[#CBD5E1] disabled:opacity-50">
+              <Import size={14} /> {importing ? 'Importing...' : 'Import Leads'}
+            </button>
+            <button type="button" onClick={openCreateLead} className="flex h-10 items-center gap-2 rounded-lg bg-[#C8A96B] px-3 text-xs font-semibold text-[#111111]">
+              <CirclePlus size={14} /> Add Lead
+            </button>
+            <span className="flex h-10 items-center rounded-lg border border-[#334155] bg-[#0F172A] px-3 text-xs text-[#94A3B8]">Source: Supabase</span>
           </div>
         </div>
+      </header>
 
-        <CollapsibleBlock title="Notes / Activity" count={1} expanded={detailBlocks.notes} onToggle={() => toggleDetailBlock('notes')}>
-          <div className="mt-4 flex gap-2">
-            <input value={noteDraft} onChange={(event) => setNoteDraft(event.target.value)} placeholder="Add follow-up note" className="min-w-0 flex-1 rounded-2xl border border-white/10 bg-[#141414] px-4 py-3 text-sm text-white outline-none placeholder:text-slate-600 focus:border-gold/40" />
-            <button onClick={onAddNote} className="rounded-2xl bg-gold px-4 py-3 text-sm font-semibold text-charcoal transition hover:bg-softGold">Add</button>
+      {loadError ? <div className="rounded-xl border border-amber-500/25 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">{loadError}</div> : null}
+
+      <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
+        <KpiCard label="New Leads" value={kpis.new} note="Not contacted yet" active={statusFilter === 'New'} onClick={() => setStatusFilter('New')} />
+        <KpiCard label="Need Contact Today" value={kpis.needContact} note="First outreach required" onClick={() => { setStatusFilter('New'); setSearch(''); }} />
+        <KpiCard label="Follow Up Today" value={kpis.followUp} note="Lead or task due today" onClick={() => setSearch('')} />
+        <KpiCard label="Quoted" value={kpis.quoted} note="Awaiting response" active={statusFilter === 'Quoted'} onClick={() => setStatusFilter('Quoted')} />
+        <KpiCard label="Won" value={kpis.won} note="Corporate accounts" active={statusFilter === 'Won'} onClick={() => setStatusFilter('Won')} />
+        <KpiCard label="Lost" value={kpis.lost} note="Closed without order" active={statusFilter === 'Lost'} onClick={() => setStatusFilter('Lost')} />
+      </section>
+
+      <section className="rounded-xl border border-[#334155] bg-[#111111] p-3">
+        <div className="grid gap-2 lg:grid-cols-[minmax(260px,1.5fr)_repeat(3,minmax(150px,0.6fr))]">
+          <label className="relative">
+            <Search size={15} className="pointer-events-none absolute left-3 top-3 text-[#64748B]" />
+            <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search company, contact or phone" className="h-10 w-full rounded-lg border border-[#334155] bg-[#0F172A] pl-9 pr-3 text-sm text-white outline-none focus:border-[#C8A96B]/50" />
+          </label>
+          <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as StatusFilter)} className="h-10 rounded-lg border border-[#334155] bg-[#0F172A] px-3 text-sm text-white">
+            <option value="All">All statuses</option>
+            {LEAD_STATUSES.map((status) => <option key={status} value={status}>{status}</option>)}
+          </select>
+          <select value={typeFilter} onChange={(event) => setTypeFilter(event.target.value as 'All' | SalesLeadType)} className="h-10 rounded-lg border border-[#334155] bg-[#0F172A] px-3 text-sm text-white">
+            <option value="All">All lead types</option>
+            {LEAD_TYPES.map((type) => <option key={type} value={type}>{type}</option>)}
+          </select>
+          <select value={areaFilter} onChange={(event) => setAreaFilter(event.target.value)} className="h-10 rounded-lg border border-[#334155] bg-[#0F172A] px-3 text-sm text-white">
+            <option value="All">All areas</option>
+            {areas.map((area) => <option key={area} value={area}>{area}</option>)}
+          </select>
+        </div>
+      </section>
+
+      <section className="overflow-hidden rounded-xl border border-[#334155] bg-[#111111]">
+        <div className="flex items-center justify-between border-b border-[#334155] px-4 py-3">
+          <div>
+            <h2 className="text-sm font-semibold text-white">Lead Directory</h2>
+            <p className="mt-1 text-xs text-[#64748B]">{filteredLeads.length} matching leads</p>
           </div>
-          <div className="mt-4 whitespace-pre-line rounded-2xl border border-white/10 bg-white/[0.03] p-4 text-sm leading-6 text-slate-300">
-            {lead.notes || 'No notes yet.'}
+          <Filter size={15} className="text-[#C8A96B]" />
+        </div>
+        {loading ? (
+          <div className="space-y-2 p-4">{Array.from({ length: 6 }).map((_, index) => <div key={index} className="h-12 animate-pulse rounded-lg bg-[#0F172A]" />)}</div>
+        ) : visibleLeads.length ? (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[1180px] text-left text-xs">
+              <thead className="bg-[#0F172A] text-[10px] uppercase tracking-[0.1em] text-[#64748B]">
+                <tr>
+                  {['Company', 'Contact Person', 'Phone', 'Lead Type', 'Area', 'Status', 'Last Contact', 'Next Follow-Up', 'Action'].map((header) => <th key={header} className="px-3 py-2.5 font-semibold">{header}</th>)}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[#263348]">
+                {visibleLeads.map((lead) => {
+                  const status = displayStatus(lead.status);
+                  const dueToday = lead.nextFollowUpDate === today || taskLeadIdsDueToday.has(String(lead.id));
+                  return (
+                    <tr key={String(lead.id || lead.companyName)} className="transition hover:bg-white/[0.025]">
+                      <td className="max-w-[220px] px-3 py-3 font-semibold text-white"><button type="button" onClick={() => setSelectedLeadId(lead.id || null)} className="truncate text-left hover:text-[#E4C98E]">{lead.companyName || 'Unnamed company'}</button></td>
+                      <td className="px-3 py-3 text-[#CBD5E1]">{lead.contactPerson || 'No contact person'}</td>
+                      <td className="px-3 py-3 text-[#CBD5E1]">{lead.phone || '-'}</td>
+                      <td className="px-3 py-3 text-[#94A3B8]">{lead.leadType}</td>
+                      <td className="px-3 py-3 text-[#94A3B8]">{lead.area || '-'}</td>
+                      <td className="px-3 py-3"><span className={`rounded-full border px-2 py-1 text-[10px] font-semibold ${statusTone(status)}`}>{status}</span></td>
+                      <td className="px-3 py-3 text-[#94A3B8]">{lead.lastContactDate || 'Not contacted'}</td>
+                      <td className={`px-3 py-3 ${dueToday ? 'font-semibold text-amber-300' : 'text-[#94A3B8]'}`}>{lead.nextFollowUpDate || 'Not scheduled'}</td>
+                      <td className="px-3 py-2">
+                        <div className="flex gap-1.5">
+                          <button type="button" disabled={!normalizeMalaysiaMobile(lead.phone)} onClick={() => void openWhatsApp(lead)} className="flex h-8 items-center gap-1 rounded-lg bg-emerald-500/15 px-2.5 text-[10px] font-semibold text-emerald-200 disabled:opacity-35"><MessageCircle size={12} /> WhatsApp</button>
+                          {['Contacted', 'Interested'].includes(lead.status) ? (
+                            <button type="button" disabled={!normalizeMalaysiaMobile(lead.phone)} onClick={() => openSuggestedReply(lead)} className="h-8 rounded-lg border border-sky-500/25 bg-sky-500/10 px-2.5 text-[10px] font-semibold text-sky-200 disabled:opacity-35">Suggested Reply</button>
+                          ) : null}
+                          <button type="button" onClick={() => openQuotation(lead)} className="flex h-8 items-center gap-1 rounded-lg border border-[#C8A96B]/30 bg-[#C8A96B]/10 px-2.5 text-[10px] font-semibold text-[#E4C98E]"><FileText size={12} /> Quote</button>
+                          <button type="button" disabled={saving || status === 'Won'} onClick={() => void updateLead(lead, { status: 'Won' }, `${lead.companyName} marked Won.`)} className="h-8 rounded-lg border border-emerald-500/25 bg-emerald-500/10 px-2.5 text-[10px] font-semibold text-emerald-300 disabled:opacity-35">Mark Won</button>
+                          <button type="button" onClick={() => setSelectedLeadId(lead.id || null)} className="flex h-8 items-center gap-1 rounded-lg border border-[#334155] bg-[#0F172A] px-2.5 text-[10px] font-semibold text-[#CBD5E1]"><MoreHorizontal size={12} /> More</button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
-        </CollapsibleBlock>
-      </div>
-    </aside>
+        ) : (
+          <div className="px-4 py-12 text-center">
+            <Target size={22} className="mx-auto text-[#64748B]" />
+            <p className="mt-3 text-sm font-semibold text-white">No leads found</p>
+            <p className="mt-1 text-xs text-[#64748B]">Adjust the filters or import a new lead list.</p>
+          </div>
+        )}
+        <div className="flex items-center justify-between border-t border-[#334155] px-4 py-3 text-xs text-[#94A3B8]">
+          <span>Page {page} of {totalPages}</span>
+          <div className="flex gap-2">
+            <button type="button" disabled={page === 1} onClick={() => setPage((current) => Math.max(current - 1, 1))} className="flex h-8 items-center gap-1 rounded-lg border border-[#334155] bg-[#0F172A] px-2.5 disabled:opacity-35"><ChevronLeft size={13} /> Previous</button>
+            <button type="button" disabled={page === totalPages} onClick={() => setPage((current) => Math.min(current + 1, totalPages))} className="flex h-8 items-center gap-1 rounded-lg border border-[#334155] bg-[#0F172A] px-2.5 disabled:opacity-35">Next <ChevronRight size={13} /></button>
+          </div>
+        </div>
+      </section>
+
+      {selectedLead ? (
+        <LeadDrawer
+          lead={selectedLead}
+          tasks={selectedTasks}
+          activities={selectedActivities}
+          saving={saving}
+          onClose={() => setSelectedLeadId(null)}
+          onWhatsApp={() => void openWhatsApp(selectedLead)}
+          onSuggestedReply={() => openSuggestedReply(selectedLead)}
+          onQuote={() => openQuotation(selectedLead)}
+          onEdit={() => { setLeadDraft(selectedLead); setShowLeadForm(true); }}
+          onStatus={(status) => void updateLead(selectedLead, { status }, `${selectedLead.companyName} moved to ${status}.`)}
+          onFollowUp={(date, note) => void scheduleFollowUp(selectedLead, date, note)}
+          onCompleteTask={(task) => void completeTask(task)}
+          onArchive={() => void archiveLead(selectedLead)}
+          onDelete={() => void deleteLead(selectedLead)}
+        />
+      ) : null}
+
+      {showLeadForm ? (
+        <LeadFormModal
+          lead={leadDraft}
+          saving={saving}
+          onChange={setLeadDraft}
+          onClose={() => setShowLeadForm(false)}
+          onSave={() => void saveLead()}
+        />
+      ) : null}
+    </div>
   );
 }
 
-function LeadDetailDrawer({
+function LeadDrawer({
   lead,
+  tasks,
   activities,
+  saving,
   onClose,
-  onOpenWhatsApp,
-  onGenerateWhatsApp,
-  onStatusChange,
-  onUpdate,
+  onWhatsApp,
+  onSuggestedReply,
+  onQuote,
+  onEdit,
+  onStatus,
+  onFollowUp,
+  onCompleteTask,
   onArchive,
   onDelete
 }: {
   lead: SalesLead;
+  tasks: FollowUpTask[];
   activities: LeadActivity[];
+  saving: boolean;
   onClose: () => void;
-  onOpenWhatsApp: (lead: SalesLead) => void;
-  onGenerateWhatsApp: (lead: SalesLead) => void;
-  onStatusChange: (status: SalesLeadStatus) => void;
-  onUpdate: (lead: SalesLead) => void;
-  onArchive: (lead: SalesLead) => void;
-  onDelete: (lead: SalesLead) => void;
+  onWhatsApp: () => void;
+  onSuggestedReply: () => void;
+  onQuote: () => void;
+  onEdit: () => void;
+  onStatus: (status: LeadCenterStatus) => void;
+  onFollowUp: (date: string, note: string) => void;
+  onCompleteTask: (task: FollowUpTask) => void;
+  onArchive: () => void;
+  onDelete: () => void;
 }) {
+  const [followUpDate, setFollowUpDate] = useState(lead.nextFollowUpDate || localDateKey());
+  const [followUpNote, setFollowUpNote] = useState('');
+  const status = displayStatus(lead.status);
   return (
-    <div className="fixed inset-0 z-50 flex justify-end bg-black/70 backdrop-blur-sm">
-      <button className="flex-1 cursor-default" aria-label="Close lead drawer" onClick={onClose} />
-      <aside className="h-full w-full max-w-2xl overflow-y-auto border-l border-white/10 bg-[#0f1011] p-6">
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <p className="text-xs uppercase tracking-[0.28em] text-softGold">Lead Detail Drawer</p>
-            <h3 className="mt-2 text-2xl font-semibold text-white">{lead.companyName}</h3>
-            <p className="mt-2 text-sm text-slate-400">{lead.contactPerson || 'No contact'} | {lead.phone || 'No phone'}</p>
+    <div className="fixed inset-0 z-50 flex justify-end bg-black/65">
+      <button type="button" aria-label="Close lead drawer" onClick={onClose} className="min-w-0 flex-1" />
+      <aside className="h-full w-full max-w-xl overflow-y-auto border-l border-[#334155] bg-[#090A0B] p-4 shadow-2xl">
+        <div className="flex items-start justify-between gap-3 border-b border-[#334155] pb-4">
+          <div className="min-w-0">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-[#C8A96B]">Lead Details</p>
+            <h2 className="mt-2 truncate text-xl font-semibold text-white">{lead.companyName}</h2>
+            <p className="mt-1 text-sm text-[#94A3B8]">{lead.contactPerson || 'No contact person'} · {lead.phone || 'No phone'}</p>
           </div>
-          <button onClick={onClose} className="rounded-2xl border border-white/10 bg-white/5 px-4 py-2 text-sm text-slate-200 transition hover:bg-white/10">Close</button>
+          <button type="button" onClick={onClose} className="flex h-9 w-9 items-center justify-center rounded-lg border border-[#334155] text-[#94A3B8]"><X size={16} /></button>
         </div>
 
-        <div className="mt-5 flex flex-wrap gap-2">
-          {isFollowUpToday(lead) && <span className="rounded-full bg-gold/15 px-3 py-1 text-xs font-semibold text-softGold">Follow Up Today</span>}
-          {isDue(lead) && !isFollowUpToday(lead) && <span className="rounded-full bg-amber-500/10 px-3 py-1 text-xs font-semibold text-amber-200">Follow-up Due</span>}
-          <span className={`rounded-full border px-3 py-1 text-xs font-semibold ${statusTone(lead.status)}`}>{lead.status}</span>
-          <span className={`rounded-full border px-3 py-1 text-xs font-semibold ${priorityTone(lead.leadPriority)}`}>{lead.leadPriority} | Score {lead.leadScore}</span>
-          <span className="rounded-full bg-white/5 px-3 py-1 text-xs text-slate-300">Sample: {sampleStatusForLead(lead)}</span>
+        <div className="mt-4 grid grid-cols-2 gap-2">
+          <button type="button" disabled={!normalizeMalaysiaMobile(lead.phone)} onClick={onWhatsApp} className="flex h-10 items-center justify-center gap-2 rounded-lg bg-emerald-500/15 text-xs font-semibold text-emerald-200 disabled:opacity-35"><MessageCircle size={14} /> WhatsApp</button>
+          <button type="button" onClick={onQuote} className="flex h-10 items-center justify-center gap-2 rounded-lg border border-[#C8A96B]/30 bg-[#C8A96B]/10 text-xs font-semibold text-[#E4C98E]"><FileText size={14} /> Create Quote</button>
+          {['Contacted', 'Interested'].includes(lead.status) ? (
+            <button type="button" disabled={!normalizeMalaysiaMobile(lead.phone)} onClick={onSuggestedReply} className="col-span-2 flex h-10 items-center justify-center gap-2 rounded-lg border border-sky-500/25 bg-sky-500/10 text-xs font-semibold text-sky-200 disabled:opacity-35"><MessageCircle size={14} /> Use Follow-up Reply Template</button>
+          ) : null}
+          <button type="button" onClick={onEdit} className="h-10 rounded-lg border border-[#334155] bg-[#111111] text-xs font-semibold text-[#CBD5E1]">Edit Lead</button>
+          <select value={status} disabled={saving} onChange={(event) => onStatus(event.target.value as LeadCenterStatus)} className="h-10 rounded-lg border border-[#334155] bg-[#111111] px-3 text-xs font-semibold text-white">
+            {LEAD_STATUSES.map((item) => <option key={item} value={item}>{item}</option>)}
+          </select>
         </div>
 
-        <div className="mt-5 grid gap-3 sm:grid-cols-2">
-          <button onClick={() => onArchive(lead)} className="rounded-2xl border border-gold/40 bg-gold/10 px-4 py-3 text-sm font-semibold text-softGold transition hover:bg-gold/20">Archive Lead</button>
-          <button onClick={() => onDelete(lead)} className="rounded-2xl border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-sm font-semibold text-rose-200 transition hover:bg-rose-500/20">Delete Lead</button>
-        </div>
-
-        <div className="mt-6 grid gap-4 sm:grid-cols-2">
-          <Info label="Lead Type" value={lead.leadType} />
-          <Info label="Industry" value={lead.industry || '-'} />
-          <Info label="Area" value={lead.area || '-'} />
-          <Info label="Email" value={lead.email || '-'} />
-          <Info label="Website" value={lead.website || '-'} />
-          <Info label="Facebook" value={lead.facebook || '-'} />
-          <Info label="Instagram" value={lead.instagram || '-'} />
-          <Info label="Lead Source" value={lead.leadSource || '-'} />
-          <Info label="Potential Value" value={formatRM(lead.potentialValue)} />
-          <Info label="Actual Revenue" value={formatRM(lead.actualRevenue)} />
-          <Info label="Last Contact" value={lead.lastContactDate || '-'} />
-          <Info label="Next Follow-up" value={lead.nextFollowUpDate || '-'} />
-        </div>
-
-        <section className="mt-6 rounded-[24px] border border-white/10 bg-[#141414] p-5">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <p className="text-xs uppercase tracking-[0.22em] text-softGold">Edit Lead</p>
-              <h4 className="mt-2 text-lg font-semibold text-white">Contact and sales details</h4>
-            </div>
-            <button onClick={() => onOpenWhatsApp(lead)} className="rounded-2xl bg-emerald-500/10 px-4 py-2 text-sm font-semibold text-emerald-200 transition hover:bg-emerald-500/20">WhatsApp</button>
-            <button onClick={() => onGenerateWhatsApp(lead)} className="rounded-2xl border border-gold/30 bg-gold/10 px-4 py-2 text-sm font-semibold text-softGold transition hover:bg-gold/20">Generate Message</button>
-          </div>
-
-          <div className="mt-5 grid gap-3 sm:grid-cols-2">
-            <label className="text-xs uppercase tracking-[0.18em] text-slate-500">
-              Company
-              <input value={lead.companyName} onChange={(event) => onUpdate({ ...lead, companyName: event.target.value })} className="mt-2 h-11 w-full rounded-2xl border border-white/10 bg-[#0f0f0f] px-4 text-sm text-white outline-none focus:border-gold/40" />
-            </label>
-            <label className="text-xs uppercase tracking-[0.18em] text-slate-500">
-              Contact Person
-              <input value={lead.contactPerson} onChange={(event) => onUpdate({ ...lead, contactPerson: event.target.value })} className="mt-2 h-11 w-full rounded-2xl border border-white/10 bg-[#0f0f0f] px-4 text-sm text-white outline-none focus:border-gold/40" />
-            </label>
-            <label className="text-xs uppercase tracking-[0.18em] text-slate-500">
-              Phone
-              <input value={lead.phone} onChange={(event) => onUpdate({ ...lead, phone: event.target.value })} className="mt-2 h-11 w-full rounded-2xl border border-white/10 bg-[#0f0f0f] px-4 text-sm text-white outline-none focus:border-gold/40" />
-            </label>
-            <label className="text-xs uppercase tracking-[0.18em] text-slate-500">
-              Email
-              <input value={lead.email} onChange={(event) => onUpdate({ ...lead, email: event.target.value })} className="mt-2 h-11 w-full rounded-2xl border border-white/10 bg-[#0f0f0f] px-4 text-sm text-white outline-none focus:border-gold/40" />
-            </label>
-            <label className="text-xs uppercase tracking-[0.18em] text-slate-500">
-              Area
-              <input value={lead.area} onChange={(event) => onUpdate({ ...lead, area: event.target.value })} className="mt-2 h-11 w-full rounded-2xl border border-white/10 bg-[#0f0f0f] px-4 text-sm text-white outline-none focus:border-gold/40" />
-            </label>
-            <label className="text-xs uppercase tracking-[0.18em] text-slate-500">
-              Next Follow Up
-              <input type="date" value={lead.nextFollowUpDate || ''} onChange={(event) => onUpdate({ ...lead, nextFollowUpDate: event.target.value })} className="mt-2 h-11 w-full rounded-2xl border border-white/10 bg-[#0f0f0f] px-4 text-sm text-white outline-none focus:border-gold/40" />
-            </label>
-            <label className="text-xs uppercase tracking-[0.18em] text-slate-500">
-              Actual Revenue
-              <input value={lead.actualRevenue || ''} onChange={(event) => onUpdate({ ...lead, actualRevenue: toNumber(event.target.value) })} className="mt-2 h-11 w-full rounded-2xl border border-white/10 bg-[#0f0f0f] px-4 text-sm text-white outline-none focus:border-gold/40" />
-            </label>
-          </div>
-
-          <div className="mt-5 flex flex-wrap gap-2">
-            {statuses.map((status) => (
-              <button key={status} onClick={() => onStatusChange(status)} className={`rounded-2xl border px-3 py-2 text-xs font-semibold transition ${lead.status === status ? 'border-gold/50 bg-gold text-charcoal' : 'border-white/10 bg-white/5 text-slate-300 hover:border-gold/30'}`}>
-                {status}
-              </button>
-            ))}
-          </div>
+        <section className="mt-4 rounded-xl border border-[#334155] bg-[#111111] p-4">
+          <h3 className="text-sm font-semibold text-white">Company Profile</h3>
+          <dl className="mt-3 grid gap-3 text-xs sm:grid-cols-2">
+            {[
+              ['Lead Type', lead.leadType],
+              ['Area', lead.area || '-'],
+              ['Email', lead.email || '-'],
+              ['Lead Source', lead.leadSource || '-'],
+              ['Last Contact', lead.lastContactDate || 'Not contacted'],
+              ['Next Follow-Up', lead.nextFollowUpDate || 'Not scheduled']
+            ].map(([label, value]) => <div key={label}><dt className="text-[#64748B]">{label}</dt><dd className="mt-1 font-medium text-[#CBD5E1]">{value}</dd></div>)}
+          </dl>
+          {lead.notes ? <p className="mt-4 rounded-lg border border-[#263348] bg-[#0F172A] p-3 text-xs leading-5 text-[#94A3B8]">{lead.notes}</p> : null}
         </section>
 
-        <section className="mt-6 rounded-[24px] border border-white/10 bg-[#141414] p-5">
-          <p className="text-xs uppercase tracking-[0.22em] text-softGold">Activity Timeline</p>
-          <div className="mt-4 space-y-3">
-            {activities.length === 0 && <p className="text-sm text-slate-400">No recorded activity yet.</p>}
-            {activities.map((activity) => (
-              <div key={activity.id} className="rounded-2xl border border-white/10 bg-[#0f0f0f] p-4">
-                <div className="flex items-center justify-between gap-3">
-                  <p className="text-sm font-semibold text-white">{activity.activityType}</p>
-                  <span className="text-xs text-softGold">{activity.createdAt?.slice(0, 10) || '-'}</span>
-                </div>
-                <p className="mt-2 text-sm leading-6 text-slate-300">{activity.description}</p>
-                <p className="mt-2 text-xs text-slate-500">User: {activity.performedBy || 'Unknown user'}</p>
+        <section className="mt-4 rounded-xl border border-[#334155] bg-[#111111] p-4">
+          <div className="flex items-center gap-2"><CalendarClock size={15} className="text-[#C8A96B]" /><h3 className="text-sm font-semibold text-white">Schedule Follow-Up</h3></div>
+          <div className="mt-3 grid gap-2 sm:grid-cols-[160px_1fr]">
+            <input type="date" value={followUpDate} onChange={(event) => setFollowUpDate(event.target.value)} className="h-10 rounded-lg border border-[#334155] bg-[#0F172A] px-3 text-sm text-white" />
+            <input value={followUpNote} onChange={(event) => setFollowUpNote(event.target.value)} placeholder="Follow-up note" className="h-10 rounded-lg border border-[#334155] bg-[#0F172A] px-3 text-sm text-white" />
+          </div>
+          <button type="button" disabled={!followUpDate || saving} onClick={() => onFollowUp(followUpDate, followUpNote)} className="mt-2 h-9 w-full rounded-lg bg-[#C8A96B] text-xs font-semibold text-[#111111] disabled:opacity-40">Save Follow-Up</button>
+          <div className="mt-3 space-y-2">
+            {tasks.filter((task) => task.status !== 'Completed').map((task) => (
+              <div key={String(task.id)} className="flex items-center justify-between gap-3 rounded-lg border border-[#263348] bg-[#0F172A] p-3">
+                <div><p className="text-xs font-semibold text-white">{task.title}</p><p className="mt-1 text-[11px] text-[#94A3B8]">{task.dueDate} · {task.description}</p></div>
+                <button type="button" onClick={() => onCompleteTask(task)} className="flex h-8 items-center gap-1 rounded-lg border border-emerald-500/25 bg-emerald-500/10 px-2 text-[10px] font-semibold text-emerald-300"><Check size={12} /> Done</button>
               </div>
             ))}
+            {!tasks.some((task) => task.status !== 'Completed') ? <p className="py-3 text-center text-xs text-[#64748B]">No open follow-ups.</p> : null}
           </div>
         </section>
+
+        <section className="mt-4 rounded-xl border border-[#334155] bg-[#111111] p-4">
+          <h3 className="text-sm font-semibold text-white">Recent Activity</h3>
+          <div className="mt-3 space-y-2">
+            {activities.map((activity) => <div key={String(activity.id)} className="border-l-2 border-[#C8A96B]/40 pl-3"><p className="text-xs font-semibold text-[#CBD5E1]">{activity.activityType}</p><p className="mt-1 text-[11px] text-[#64748B]">{activity.createdAt?.slice(0, 10) || '-'} · {activity.description}</p></div>)}
+            {!activities.length ? <p className="text-xs text-[#64748B]">No activity recorded.</p> : null}
+          </div>
+        </section>
+
+        <div className="mt-4 grid grid-cols-2 gap-2 border-t border-[#334155] pt-4">
+          <button type="button" onClick={onArchive} className="flex h-10 items-center justify-center gap-2 rounded-lg border border-amber-500/25 bg-amber-500/10 text-xs font-semibold text-amber-200"><Archive size={14} /> Archive</button>
+          <button type="button" onClick={onDelete} className="flex h-10 items-center justify-center gap-2 rounded-lg border border-rose-500/25 bg-rose-500/10 text-xs font-semibold text-rose-200"><Trash2 size={14} /> Delete</button>
+        </div>
       </aside>
     </div>
   );
 }
 
-function MiniStat({ label, value }: { label: string; value: number }) {
+function LeadFormModal({
+  lead,
+  saving,
+  onChange,
+  onClose,
+  onSave
+}: {
+  lead: SalesLead;
+  saving: boolean;
+  onChange: (lead: SalesLead) => void;
+  onClose: () => void;
+  onSave: () => void;
+}) {
+  const field = (key: keyof SalesLead, value: string | number) => onChange({ ...lead, [key]: value });
   return (
-    <div className="rounded-xl border border-white/10 bg-[#0f0f0f] p-4">
-      <p className="text-xs uppercase tracking-[0.18em] text-slate-500">{label}</p>
-      <p className="mt-2 text-2xl font-semibold text-white">{value}</p>
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 p-4">
+      <div className="max-h-[92vh] w-full max-w-2xl overflow-y-auto rounded-xl border border-[#334155] bg-[#111111] p-5">
+        <div className="flex items-start justify-between gap-3">
+          <div><p className="text-[10px] uppercase tracking-[0.16em] text-[#C8A96B]">{lead.id ? 'Edit Lead' : 'New Lead'}</p><h2 className="mt-2 text-xl font-semibold text-white">{lead.id ? lead.companyName : 'Add Corporate Lead'}</h2></div>
+          <button type="button" onClick={onClose} className="flex h-9 w-9 items-center justify-center rounded-lg border border-[#334155] text-[#94A3B8]"><X size={16} /></button>
+        </div>
+        <div className="mt-5 grid gap-3 sm:grid-cols-2">
+          <FormInput label="Company Name" value={lead.companyName} onChange={(value) => field('companyName', value)} required />
+          <FormInput label="Contact Person" value={lead.contactPerson} onChange={(value) => field('contactPerson', value)} />
+          <FormInput label="Phone" value={lead.phone} onChange={(value) => field('phone', value)} />
+          <FormInput label="Email" value={lead.email} onChange={(value) => field('email', value)} />
+          <label><span className="mb-1.5 block text-xs text-[#94A3B8]">Lead Type</span><select value={lead.leadType} onChange={(event) => field('leadType', event.target.value)} className="h-10 w-full rounded-lg border border-[#334155] bg-[#0F172A] px-3 text-sm text-white">{LEAD_TYPES.map((type) => <option key={type} value={type}>{type}</option>)}</select></label>
+          <FormInput label="Area" value={lead.area} onChange={(value) => field('area', value)} />
+          <FormInput label="Industry" value={lead.industry} onChange={(value) => field('industry', value)} />
+          <FormInput label="Lead Source" value={lead.leadSource} onChange={(value) => field('leadSource', value)} />
+          <label><span className="mb-1.5 block text-xs text-[#94A3B8]">Status</span><select value={displayStatus(lead.status)} onChange={(event) => field('status', event.target.value)} className="h-10 w-full rounded-lg border border-[#334155] bg-[#0F172A] px-3 text-sm text-white">{LEAD_STATUSES.map((status) => <option key={status} value={status}>{status}</option>)}</select></label>
+          <FormInput label="Next Follow-Up" value={lead.nextFollowUpDate} onChange={(value) => field('nextFollowUpDate', value)} type="date" />
+          <FormInput label="Potential Value" value={String(lead.potentialValue)} onChange={(value) => field('potentialValue', Number(value) || 0)} type="number" />
+          <FormInput label="Website" value={lead.website} onChange={(value) => field('website', value)} />
+          <label className="sm:col-span-2"><span className="mb-1.5 block text-xs text-[#94A3B8]">Notes</span><textarea value={lead.notes} onChange={(event) => field('notes', event.target.value)} rows={4} className="w-full rounded-lg border border-[#334155] bg-[#0F172A] p-3 text-sm text-white outline-none" /></label>
+        </div>
+        <div className="mt-5 flex justify-end gap-2">
+          <button type="button" onClick={onClose} className="h-10 rounded-lg border border-[#334155] px-4 text-xs font-semibold text-[#CBD5E1]">Cancel</button>
+          <button type="button" disabled={saving} onClick={onSave} className="h-10 rounded-lg bg-[#C8A96B] px-4 text-xs font-semibold text-[#111111] disabled:opacity-50">{saving ? 'Saving...' : 'Save Lead'}</button>
+        </div>
+      </div>
     </div>
   );
 }
 
-function Info({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-xl border border-white/10 bg-[#0f0f0f] p-4">
-      <p className="text-xs uppercase tracking-[0.18em] text-slate-500">{label}</p>
-      <p className="mt-2 break-words text-sm font-semibold text-white">{value}</p>
-    </div>
-  );
+function FormInput({ label, value, onChange, type = 'text', required = false }: { label: string; value: string; onChange: (value: string) => void; type?: string; required?: boolean }) {
+  return <label><span className="mb-1.5 block text-xs text-[#94A3B8]">{label}{required ? ' *' : ''}</span><input type={type} value={value} onChange={(event) => onChange(event.target.value)} className="h-10 w-full rounded-lg border border-[#334155] bg-[#0F172A] px-3 text-sm text-white outline-none focus:border-[#C8A96B]/50" /></label>;
 }

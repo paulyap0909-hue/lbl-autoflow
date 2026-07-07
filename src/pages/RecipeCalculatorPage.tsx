@@ -33,7 +33,7 @@ const formatAmount = (value: number) =>
 const formatMoney = (value: number) =>
   `RM${(Number.isFinite(value) ? value : 0).toFixed(2)}`;
 
-export default function RecipeCalculatorPage() {
+export default function RecipeCalculatorPage({ view = 'recipe' }: { view?: 'recipe' | 'cost' }) {
   const [mode, setMode] = useState<CalculatorMode>('quantity');
   const [selectedFlavour, setSelectedFlavour] = useState(recipeTemplates[0].flavour);
   const [targetQuantity, setTargetQuantity] = useState(10);
@@ -130,9 +130,13 @@ export default function RecipeCalculatorPage() {
         <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.24em] text-[#C8A96B]">Production Planning</p>
-            <h3 className="mt-1.5 text-2xl font-semibold text-white">Recipe Cost &amp; Yield Center</h3>
+            <h3 className="mt-1.5 text-2xl font-semibold text-white">
+              {view === 'cost' ? 'Cost & Profit Calculator' : 'Recipe Yield Calculator'}
+            </h3>
             <p className="mt-2 max-w-3xl text-sm leading-6 text-[#94A3B8]">
-              Calculate ingredient requirements, recipe cost, production yield and estimated gross profit.
+              {view === 'cost'
+                ? 'Calculate ingredient cost, selling margin and estimated batch profit for every mini tart flavour.'
+                : 'Calculate ingredient requirements and possible production yield for every mini tart flavour.'}
             </p>
           </div>
           <span className="w-fit rounded-xl border border-[#C8A96B]/30 bg-[#C8A96B]/10 px-3.5 py-2.5 text-xs font-semibold text-[#E4C98E]">

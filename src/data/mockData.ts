@@ -12,7 +12,7 @@ export type Order = {
   orderNo?: string;
   customerName: string;
   phone: string;
-  product: 'Mini Tart' | 'Croissant Egg Tart';
+  product: string;
   flavours: string[];
   flavourQuantities?: FlavourQuantity[];
   quantity: number;
@@ -36,8 +36,9 @@ export type Order = {
     timestamp: string;
   }[];
   paymentStatus: 'Paid' | 'Pending' | 'Overdue';
+  paymentMethod?: 'Cash' | 'QR' | 'Debit Card' | 'Credit Card' | 'Bank Transfer' | 'Customer Wallet';
   kitchenStatus: 'New' | 'Preparing' | 'Ready' | 'Completed';
-  deliveryStatus: 'Pending' | 'Assigned' | 'Out for Delivery' | 'Delivered';
+  deliveryStatus: 'Pending' | 'Assigned' | 'Out for Delivery' | 'Delivered' | 'Collected';
   remark?: string;
 };
 
@@ -51,6 +52,7 @@ export type Customer = {
   notes?: string;
   totalOrders: number;
   totalSpend: number;
+  walletBalance?: number;
   averageOrderValue?: number;
   firstOrderDate?: string;
   lastOrderDate: string;
@@ -84,7 +86,7 @@ export type DeliveryTask = {
   driverName: string;
   driverPhone?: string;
   driverType?: 'Internal Driver' | 'Grab' | 'Lalamove' | 'Self Collect';
-  deliveryStatus: 'Pending' | 'Assigned' | 'Out for Delivery' | 'Delivered';
+  deliveryStatus: 'Pending' | 'Assigned' | 'Out for Delivery' | 'Delivered' | 'Collected';
 };
 
 export type AutomationRule = {
@@ -105,16 +107,18 @@ export type SettingField = {
 export type Product = {
   id: string;
   name: string;
-  category: 'Mini Tart' | 'Croissant Egg Tart';
+  category: 'Mini Tart' | 'Croissant Egg Tart' | 'Chewy Cookie' | 'Others';
   unit_price: number;
   price?: number;
   imageUrl?: string;
   image_url?: string;
   image?: string;
-  status: 'Available' | 'Out of Stock' | 'Seasonal' | 'Premium';
+  status: 'Available' | 'Unavailable' | 'Out of Stock' | 'Seasonal' | 'Premium';
   flavours: string[];
   description: string;
   createdAt: string;
+  updatedAt?: string;
+  sortOrder?: number;
 };
 
 export const products: Product[] = [
@@ -183,6 +187,30 @@ export const products: Product[] = [
     flavours: ['Caramel Lava'],
     description: 'Molten caramel centre with crisp croissant pastry.',
     createdAt: '2026-05-08'
+  },
+  {
+    id: 'P-007',
+    name: 'Dubai Chewy Cookie Pistachio',
+    category: 'Chewy Cookie',
+    unit_price: 10,
+    image_url: '',
+    status: 'Available',
+    flavours: ['Dubai Chewy Cookie Pistachio'],
+    description: 'Dubai-style chewy cookie with pistachio filling.',
+    createdAt: '2026-06-15',
+    sortOrder: 30
+  },
+  {
+    id: 'P-008',
+    name: 'Dubai Chewy Cookie Biscoff',
+    category: 'Chewy Cookie',
+    unit_price: 10,
+    image_url: '',
+    status: 'Available',
+    flavours: ['Dubai Chewy Cookie Biscoff'],
+    description: 'Dubai-style chewy cookie with Biscoff filling.',
+    createdAt: '2026-06-15',
+    sortOrder: 31
   }
 ];
 

@@ -11,6 +11,7 @@ type CustomerRow = {
   email?: string | null;
   address?: string | null;
   notes?: string | null;
+  wallet_balance?: number | string | null;
   total_orders?: number | string | null;
   totalOrders?: number | string | null;
   total_spend?: number | string | null;
@@ -178,6 +179,7 @@ export const customerFromRow = (row: CustomerRow): Customer => ({
   email: row.email || '',
   address: row.address || '',
   notes: row.notes || '',
+  walletBalance: toSafeNumber(row.wallet_balance),
   totalOrders: toSafeNumber(row.total_orders ?? row.totalOrders),
   totalSpend: toSafeNumber(row.total_spend ?? row.totalSpend),
   averageOrderValue: toSafeNumber(row.average_order_value ?? row.averageOrderValue),

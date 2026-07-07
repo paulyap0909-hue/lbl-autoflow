@@ -3,137 +3,133 @@ import type { DeliveryTask, Order } from '../data/mockData';
 import Toast from '../components/Toast';
 import { supabase } from '../lib/supabase';
 import { createAutomationLog } from '../services/automationLogService';
-import { loadDeliveryTasksFromSupabase, type DeliveryDriverDetails } from '../services/deliveryService';
+import { isSelfCollectOrder, loadDeliveryTasksFromSupabase, type DeliveryDriverDetails } from '../services/deliveryService';
+import { getMalaysiaDateTimeInputs } from '../utils/malaysiaDateTime';
+import { getOrderFulfillmentDate, isActiveOrder } from '../utils/orderLifecycle';
 
 type DeliveryPageProps = {
   deliveryTasks: DeliveryTask[];
   orders: Order[];
-  onUpdateDeliveryStatus: (orderId: string, newStatus: 'Assigned' | 'Out for Delivery' | 'Delivered', driverName?: string, driverDetails?: DeliveryDriverDetails) => void | Promise<void>;
+  onUpdateDeliveryStatus: (
+    orderId: string,
+    newStatus: 'Assigned' | 'Out for Delivery' | 'Delivered' | 'Collected',
+    driverName?: string,
+    driverDetails?: DeliveryDriverDetails
+  ) => void | Promise<void>;
 };
 
-type DeliveryStatus = 'Pending' | 'Assigned' | 'Out for Delivery' | 'Delivered';
+type DeliveryStatus = 'Pending' | 'Assigned' | 'Out for Delivery' | 'Delivered' | 'Collected';
 type DeliveryActionStatus = Exclude<DeliveryStatus, 'Pending'>;
-type DeliveryTab = 'All' | DeliveryStatus;
 type DeliveryTaskRecord = Partial<DeliveryTask> & Record<string, unknown>;
 type DriverType = 'Internal Driver' | 'Grab' | 'Lalamove' | 'Self Collect';
+type DeliveryViewMode = 'active' | 'all';
+
 type DriverProfile = {
   id: string;
   name: string;
   phone: string;
   type: DriverType;
-  vehicle: string;
 };
 
 const driverProfiles: DriverProfile[] = [
-  { id: 'ibrahim', name: 'Ibrahim', phone: '60123450001', type: 'Internal Driver', vehicle: 'Motorbike' },
-  { id: 'siti', name: 'Siti', phone: '60123450002', type: 'Internal Driver', vehicle: 'Car' },
-  { id: 'ali', name: 'Ali', phone: '60123450003', type: 'Internal Driver', vehicle: 'Motorbike' },
-  { id: 'grab', name: 'Grab', phone: '', type: 'Grab', vehicle: 'E-hailing' },
-  { id: 'lalamove', name: 'Lalamove', phone: '', type: 'Lalamove', vehicle: 'Courier' },
-  { id: 'self-collect', name: 'SELF COLLECT', phone: '', type: 'Self Collect', vehicle: 'Customer Pickup' }
+  { id: 'ibrahim', name: 'Ibrahim', phone: '60123450001', type: 'Internal Driver' },
+  { id: 'siti', name: 'Siti', phone: '60123450002', type: 'Internal Driver' },
+  { id: 'ali', name: 'Ali', phone: '60123450003', type: 'Internal Driver' },
+  { id: 'grab', name: 'Grab', phone: '', type: 'Grab' },
+  { id: 'lalamove', name: 'Lalamove', phone: '', type: 'Lalamove' }
 ];
-const tabs: DeliveryTab[] = ['All', 'Pending', 'Assigned', 'Out for Delivery', 'Delivered'];
-const statusPriority: Record<DeliveryStatus, number> = {
-  Pending: 0,
-  Assigned: 1,
-  'Out for Delivery': 2,
-  Delivered: 3
-};
 
-const readText = (value: unknown, fallback: string) => {
-  if (typeof value === 'string' && value.trim()) return value;
+const readText = (value: unknown, fallback = '') => {
+  if (typeof value === 'string' && value.trim()) return value.trim();
   if (typeof value === 'number') return String(value);
   return fallback;
 };
 
-const normalizeDeliveryStatus = (value: unknown): DeliveryStatus => {
-  if (value === 'Assigned' || value === 'Out for Delivery' || value === 'Delivered') return value;
+const normalizeStatus = (value: unknown): DeliveryStatus => {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  if (normalized === 'assigned') return 'Assigned';
+  if (normalized === 'out for delivery' || normalized === 'out_for_delivery') return 'Out for Delivery';
+  if (normalized === 'collected') return 'Collected';
+  if (normalized === 'delivered' || normalized === 'completed' || normalized === 'complete') return 'Delivered';
   return 'Pending';
 };
 
-const todayKey = () => {
-  const now = new Date();
-  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+const isCompletedOrder = (order?: Order) => {
+  if (!order) return false;
+  const workflow = String(order.workflowStatus ?? '').toLowerCase();
+  const delivery = String(order.deliveryStatus ?? '').toLowerCase();
+  return ['completed', 'complete'].includes(workflow)
+    || ['delivered', 'completed', 'complete', 'collected'].includes(delivery);
 };
 
-const getTaskDateTime = (task: DeliveryTaskRecord) => {
-  const deliveryDate = readText(task.delivery_date ?? task.deliveryDate, '');
-  const deliveryTime = readText(task.delivery_time ?? task.deliveryTime, '');
-  if (!deliveryDate || !deliveryTime) return Number.POSITIVE_INFINITY;
+const getTaskId = (task: DeliveryTaskRecord) => readText(task.id);
+const getTaskOrderNo = (task: DeliveryTaskRecord) => readText(task.order_no ?? task.orderId ?? task.order_id, '-');
+const getTaskDate = (task: DeliveryTaskRecord, order?: Order) =>
+  readText(
+    task.delivery_date ?? task.deliveryDate,
+    getOrderFulfillmentDate(order as (Order & Record<string, unknown>) | undefined)
+  );
+const getTaskTime = (task: DeliveryTaskRecord, order?: Order) =>
+  readText(task.delivery_time ?? task.deliveryTime ?? order?.deliveryTime);
+const getDriverName = (task: DeliveryTaskRecord) => readText(task.driver_name ?? task.driverName ?? task.driver);
+const getDriverType = (task: DeliveryTaskRecord) => readText(task.driver_type ?? task.driverType ?? task.delivery_method ?? task.deliveryMethod);
 
-  const parsed = new Date(`${deliveryDate} ${deliveryTime}`).getTime();
+const isSelfCollectTask = (task: DeliveryTaskRecord, order?: Order) => {
+  const address = readText(task.address ?? order?.address).toLowerCase();
+  const driver = getDriverName(task).toLowerCase();
+  const driverType = getDriverType(task).toLowerCase();
+  return driverType === 'self collect'
+    || driver.includes('self collect')
+    || /self\s*collect|pickup|pick\s*up|collection/.test(address);
+};
+
+const getStatus = (task: DeliveryTaskRecord, order?: Order) => {
+  if (isCompletedOrder(order)) {
+    const rawOrder = order as (Order & Record<string, unknown>) | undefined;
+    const delivery = String(rawOrder?.deliveryStatus ?? rawOrder?.delivery_status ?? '').trim().toLowerCase();
+    return delivery === 'collected' ? 'Collected' : 'Delivered';
+  }
+  return normalizeStatus(task.status ?? task.deliveryStatus ?? order?.deliveryStatus);
+};
+
+const getSortValue = (task: DeliveryTaskRecord, order?: Order) => {
+  const date = getTaskDate(task, order);
+  const time = getTaskTime(task, order) || '23:59';
+  if (!date) return Number.POSITIVE_INFINITY;
+  const parsed = new Date(`${date}T${time}`).getTime();
   return Number.isNaN(parsed) ? Number.POSITIVE_INFINITY : parsed;
 };
 
-const getTaskOrderNo = (task: DeliveryTaskRecord) => readText(task.order_no ?? task.orderId ?? task.order_id, '-');
-const getTaskId = (task: DeliveryTaskRecord) => readText(task.id, '');
-const getTaskKey = (task: DeliveryTaskRecord, index = 0) => `${getTaskId(task) || getTaskOrderNo(task)}-${index}`;
-const getTaskDriverName = (task: DeliveryTaskRecord) => readText(task.driver_name ?? task.driverName, '');
-const getTaskDriverType = (task: DeliveryTaskRecord): DriverType | '' => {
-  const value = readText(task.driver_type ?? task.driverType, '');
-  if (value === 'Internal Driver' || value === 'Grab' || value === 'Lalamove' || value === 'Self Collect') return value;
-  return '';
-};
-const getTaskReadyTime = (task: DeliveryTaskRecord, order?: Order) => {
-  const explicitReadyTime = readText(task.ready_time ?? task.readyTime ?? task.required_ready_time ?? task.requiredReadyTime, '');
-  if (explicitReadyTime) return explicitReadyTime;
-
-  const deliveryDate = readText(task.delivery_date ?? task.deliveryDate ?? order?.deliveryDate, '');
-  const deliveryTime = readText(task.delivery_time ?? task.deliveryTime ?? order?.deliveryTime, '');
-  if (!deliveryDate || !deliveryTime) return '-';
-
-  const parsed = new Date(`${deliveryDate} ${deliveryTime}`);
-  if (Number.isNaN(parsed.getTime())) return '-';
-  parsed.setMinutes(parsed.getMinutes() - 30);
-  return parsed.toLocaleTimeString('en-MY', { hour: '2-digit', minute: '2-digit' });
-};
-const isSelfCollectTask = (task: DeliveryTaskRecord) => {
-  const name = getTaskDriverName(task).toLowerCase();
-  const type = getTaskDriverType(task);
-  const address = readText(task.address, '').toLowerCase();
-  return type === 'Self Collect' || name.includes('self collect') || address.includes('self collect');
-};
-const getDriverDisplayName = (task: DeliveryTaskRecord) => {
-  if (isSelfCollectTask(task)) return 'SELF COLLECT';
-  return getTaskDriverName(task) || 'Unassigned';
-};
-const getSelectedDriverProfile = (id: string) => driverProfiles.find((driver) => driver.id === id);
-const getOrderProducts = (task: DeliveryTaskRecord, order?: Order) => {
-  const product = readText(task.product ?? order?.product, 'Bakery order');
-  const rawFlavours = task.flavours ?? order?.flavours;
-  const flavours = Array.isArray(rawFlavours) ? rawFlavours.map(String).filter(Boolean) : [];
-  const quantity = readText(task.quantity ?? order?.quantity, '');
-  if (flavours.length === 0) return quantity ? `${product} x ${quantity}` : product;
-  return flavours.map((flavour) => `${flavour}${quantity ? ` x ${quantity}` : ''}`);
-};
-const getInvoiceNo = (task: DeliveryTaskRecord) => readText(task.invoice_no ?? task.invoiceNo ?? task.invoiceNumber, '-');
-const getTaskNotes = (task: DeliveryTaskRecord, order?: Order) => readText(task.notes ?? task.remark ?? order?.remark, 'No delivery notes.');
-
-const getUrgencyBadges = (task: DeliveryTaskRecord, today: string) => {
-  const status = normalizeDeliveryStatus(task.status ?? task.deliveryStatus);
-  const deliveryDate = readText(task.delivery_date ?? task.deliveryDate, '');
-  const deliveryAt = getTaskDateTime(task);
-  const badges: string[] = [];
-
-  if (deliveryDate === today) badges.push('Today');
-  if (status !== 'Delivered' && Number.isFinite(deliveryAt)) {
-    const diffMs = deliveryAt - Date.now();
-    if (diffMs < 0) badges.push('Overdue');
-    else if (diffMs <= 2 * 60 * 60 * 1000) badges.push('Due Soon');
-  }
-
-  return badges;
+const normalizePhone = (phone: string) => {
+  const digits = phone.replace(/\D/g, '');
+  if (!digits) return '';
+  if (digits.startsWith('60')) return digits;
+  if (digits.startsWith('0')) return `6${digits}`;
+  return digits;
 };
 
 export default function DeliveryPage({ deliveryTasks, orders, onUpdateDeliveryStatus }: DeliveryPageProps) {
   const [supabaseTasks, setSupabaseTasks] = useState<DeliveryTaskRecord[]>([]);
-  const [activeTab, setActiveTab] = useState<DeliveryTab>('All');
-  const [isLoading, setIsLoading] = useState(false);
   const [hasLoadedSupabase, setHasLoadedSupabase] = useState(false);
-  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [viewMode, setViewMode] = useState<DeliveryViewMode>('active');
+  const [upcomingDeliveryOpen, setUpcomingDeliveryOpen] = useState(false);
+  const [upcomingSelfCollectOpen, setUpcomingSelfCollectOpen] = useState(false);
+  const [completedOpen, setCompletedOpen] = useState(false);
   const [selectedDriver, setSelectedDriver] = useState<Record<string, string>>({});
   const [updatingTaskId, setUpdatingTaskId] = useState('');
-  const [expandedTaskKey, setExpandedTaskKey] = useState('');
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
+
+  const today = useMemo(() => getMalaysiaDateTimeInputs().date, []);
+
+  const findLinkedOrder = (task: DeliveryTaskRecord) => {
+    const orderId = readText(task.order_id);
+    const orderNo = readText(task.order_no ?? task.orderId);
+    return orders.find((order) =>
+      Boolean(orderId && String(order.supabaseId) === orderId)
+      || Boolean(orderNo && (order.id === orderNo || order.orderNo === orderNo))
+    );
+  };
 
   const reloadDeliveryTasks = async () => {
     setIsLoading(true);
@@ -143,9 +139,8 @@ export default function DeliveryPage({ deliveryTasks, orders, onUpdateDeliverySt
       setHasLoadedSupabase(true);
     } catch (error) {
       console.error('Delivery tasks error:', error);
-      setToast({ message: 'Unable to load delivery tasks from Supabase.', type: 'error' });
-      setSupabaseTasks([]);
       setHasLoadedSupabase(false);
+      setToast({ message: 'Unable to load delivery tasks from Supabase.', type: 'error' });
     } finally {
       setIsLoading(false);
     }
@@ -155,447 +150,431 @@ export default function DeliveryPage({ deliveryTasks, orders, onUpdateDeliverySt
     reloadDeliveryTasks();
   }, []);
 
-  const today = useMemo(() => todayKey(), []);
-
   const displayedTasks = useMemo(() => {
-    const sourceTasks = hasLoadedSupabase ? supabaseTasks : (deliveryTasks as DeliveryTaskRecord[]);
+    const taskSource = hasLoadedSupabase
+      ? [...supabaseTasks, ...(deliveryTasks as DeliveryTaskRecord[])].filter((task, index, tasks) => {
+          const key = getTaskId(task) || getTaskOrderNo(task);
+          return tasks.findIndex((candidate) => (getTaskId(candidate) || getTaskOrderNo(candidate)) === key) === index;
+        })
+      : deliveryTasks as DeliveryTaskRecord[];
 
-    return sourceTasks
-      .slice()
-      .sort((first, second) => {
-        const firstDate = getTaskDateTime(first);
-        const secondDate = getTaskDateTime(second);
+    const selfCollectTasks = orders
+      .filter((order) => isSelfCollectOrder(order))
+      .map((order) => ({
+        id: `self-collect-${order.supabaseId || order.orderNo || order.id}`,
+        order_id: order.supabaseId,
+        order_no: order.orderNo || order.id,
+        orderId: order.orderNo || order.id,
+        customer_name: order.customerName,
+        customerName: order.customerName,
+        phone: order.phone,
+        address: 'Self Collect',
+        delivery_date: order.deliveryDate,
+        deliveryDate: order.deliveryDate,
+        delivery_time: order.deliveryTime,
+        deliveryTime: order.deliveryTime,
+        driver_name: 'Self Collect',
+        driverName: 'Self Collect',
+        driver_type: 'Self Collect',
+        driverType: 'Self Collect',
+        status: order.deliveryStatus === 'Delivered' ? 'Collected' : order.deliveryStatus,
+        deliveryStatus: order.deliveryStatus === 'Delivered' ? 'Collected' : order.deliveryStatus
+      } satisfies DeliveryTaskRecord));
 
-        if (firstDate !== secondDate) {
-          if (!Number.isFinite(firstDate)) return 1;
-          if (!Number.isFinite(secondDate)) return -1;
-          return firstDate - secondDate;
-        }
+    const source = [...taskSource, ...selfCollectTasks].filter((task, index, tasks) => {
+      const key = getTaskOrderNo(task);
+      return tasks.findIndex((candidate) => getTaskOrderNo(candidate) === key) === index;
+    });
 
-        return statusPriority[normalizeDeliveryStatus(first.status ?? first.deliveryStatus)] - statusPriority[normalizeDeliveryStatus(second.status ?? second.deliveryStatus)];
-      });
-  }, [deliveryTasks, hasLoadedSupabase, supabaseTasks]);
+    return source
+      .slice().sort((first, second) =>
+      getSortValue(first, findLinkedOrder(first)) - getSortValue(second, findLinkedOrder(second))
+    );
+  }, [deliveryTasks, hasLoadedSupabase, orders, supabaseTasks]);
+
+  const activeTasks = useMemo(
+    () => displayedTasks.filter((task) => {
+      const linkedOrder = findLinkedOrder(task);
+      return !['Delivered', 'Collected'].includes(getStatus(task, linkedOrder))
+        && (!linkedOrder || isActiveOrder(linkedOrder));
+    }),
+    [displayedTasks, orders]
+  );
+
+  const completedTasks = useMemo(
+    () => displayedTasks
+      .filter((task) => ['Delivered', 'Collected'].includes(getStatus(task, findLinkedOrder(task))))
+      .sort((first, second) => getSortValue(second, findLinkedOrder(second)) - getSortValue(first, findLinkedOrder(first))),
+    [displayedTasks, orders]
+  );
+
+  const groups = useMemo(() => {
+    const overdue = activeTasks.filter((task) => {
+      const order = findLinkedOrder(task);
+      const date = getTaskDate(task, order);
+      return Boolean(date && date < today);
+    });
+    const todayTasks = activeTasks.filter((task) => getTaskDate(task, findLinkedOrder(task)) === today);
+    const todayDelivery = todayTasks.filter((task) => !isSelfCollectTask(task, findLinkedOrder(task)));
+    const todaySelfCollect = todayTasks.filter((task) => isSelfCollectTask(task, findLinkedOrder(task)));
+    const upcomingTasks = activeTasks.filter((task) => {
+      const date = getTaskDate(task, findLinkedOrder(task));
+      return Boolean(date && date > today);
+    });
+    const upcomingDelivery = upcomingTasks.filter((task) => !isSelfCollectTask(task, findLinkedOrder(task)));
+    const upcomingSelfCollect = upcomingTasks.filter((task) => isSelfCollectTask(task, findLinkedOrder(task)));
+
+    return { overdue, todayDelivery, todaySelfCollect, upcomingDelivery, upcomingSelfCollect };
+  }, [activeTasks, orders, today]);
 
   const kpis = useMemo(() => ({
-    total: displayedTasks.length,
-    pending: displayedTasks.filter((task) => normalizeDeliveryStatus(task.status ?? task.deliveryStatus) === 'Pending').length,
-    assigned: displayedTasks.filter((task) => normalizeDeliveryStatus(task.status ?? task.deliveryStatus) === 'Assigned').length,
-    outForDelivery: displayedTasks.filter((task) => normalizeDeliveryStatus(task.status ?? task.deliveryStatus) === 'Out for Delivery').length,
-    delivered: displayedTasks.filter((task) => normalizeDeliveryStatus(task.status ?? task.deliveryStatus) === 'Delivered').length,
-    todayDeliveries: displayedTasks.filter((task) => readText(task.delivery_date ?? task.deliveryDate, '') === today).length,
-    selfCollect: displayedTasks.filter((task) => isSelfCollectTask(task)).length,
-    overdue: displayedTasks.filter((task) => getUrgencyBadges(task, today).includes('Overdue')).length
-  }), [displayedTasks, today]);
+    todayJobs: groups.todayDelivery.length + groups.todaySelfCollect.length,
+    pendingAssign: activeTasks.filter((task) =>
+      !isSelfCollectTask(task, findLinkedOrder(task)) && getStatus(task, findLinkedOrder(task)) === 'Pending'
+    ).length,
+    outForDelivery: activeTasks.filter((task) => getStatus(task, findLinkedOrder(task)) === 'Out for Delivery').length,
+    selfCollect: activeTasks.filter((task) => isSelfCollectTask(task, findLinkedOrder(task))).length,
+    overdue: groups.overdue.length
+  }), [activeTasks, groups, orders]);
 
-  const tabCounts = useMemo(() => ({
-    All: displayedTasks.length,
-    Pending: kpis.pending,
-    Assigned: kpis.assigned,
-    'Out for Delivery': kpis.outForDelivery,
-    Delivered: kpis.delivered
-  }), [displayedTasks.length, kpis]);
-
-  const visibleTasks = useMemo(() => {
-    if (activeTab === 'All') return displayedTasks;
-    return displayedTasks.filter((task) => normalizeDeliveryStatus(task.status ?? task.deliveryStatus) === activeTab);
-  }, [activeTab, displayedTasks]);
-
-  const getStatusBadgeClass = (status: string) => {
-    if (status === 'Delivered') return 'border-emerald-500/20 bg-emerald-500/10 text-emerald-200';
-    if (status === 'Out for Delivery') return 'border-indigo-500/20 bg-indigo-500/10 text-indigo-200';
-    if (status === 'Assigned') return 'border-sky-500/20 bg-sky-500/10 text-sky-200';
-    return 'border-white/10 bg-white/5 text-cream';
-  };
-
-  const getUrgencyBadgeClass = (badge: string) => {
-    if (badge === 'Overdue') return 'border-rose-500/25 bg-rose-500/10 text-rose-200';
-    if (badge === 'Due Soon') return 'border-amber-500/25 bg-amber-500/10 text-amber-200';
-    return 'border-gold/30 bg-gold/10 text-softGold';
-  };
-
-  const findLinkedOrder = (task: DeliveryTaskRecord) => {
-    const orderId = readText(task.order_id, '');
-    const orderNo = readText(task.order_no ?? task.orderId, '');
-
-    return orders.find((order) =>
-      Boolean(orderId && order.supabaseId === orderId) ||
-      Boolean(orderNo && (order.id === orderNo || order.orderNo === orderNo))
-    );
-  };
-
-  const updateFallbackDeliveryTask = async (task: DeliveryTaskRecord, status: DeliveryActionStatus, driverProfile?: DriverProfile) => {
+  const updateFallbackDeliveryTask = async (
+    task: DeliveryTaskRecord,
+    status: DeliveryActionStatus,
+    driverProfile?: DriverProfile
+  ) => {
     const taskId = getTaskId(task);
-    const orderId = readText(task.order_id, '');
-    const orderNo = readText(task.order_no ?? task.orderId, '');
-    const patch: Record<string, string> = { status };
+    const orderId = readText(task.order_id);
+    const orderNo = readText(task.order_no ?? task.orderId);
+    const taskPatch: Record<string, string> = {
+      status,
+      delivery_status: status
+    };
 
     if (driverProfile) {
-      patch.driver_name = driverProfile.name;
-      patch.driver_phone = driverProfile.phone;
-      patch.driver_type = driverProfile.type;
+      taskPatch.driver_name = driverProfile.name;
     }
 
-    if (taskId) {
-      const { error } = await supabase
-        .from('delivery_tasks')
-        .update(patch)
-        .eq('id', taskId);
-
-      if (error) throw error;
-    } else if (orderId || orderNo) {
-      const { error } = await supabase
-        .from('delivery_tasks')
-        .update(patch)
-        .eq(orderId ? 'order_id' : 'order_no', orderId || orderNo);
-
-      if (error) throw error;
-    }
+    let taskQuery = supabase.from('delivery_tasks').update(taskPatch);
+    const taskResult = taskId
+      ? await taskQuery.eq('id', taskId)
+      : await taskQuery.eq(orderId ? 'order_id' : 'order_no', orderId || orderNo);
+    if (taskResult.error) throw taskResult.error;
 
     if (orderId || orderNo) {
+      const orderPatch = ['Delivered', 'Collected'].includes(status)
+        ? { delivery_status: status, order_status: 'Completed', workflow_status: 'Completed' }
+        : { delivery_status: status };
       const { error } = await supabase
         .from('orders')
-        .update({ delivery_status: status })
+        .update(orderPatch)
         .eq(orderId ? 'id' : 'order_no', orderId || orderNo);
-
       if (error) throw error;
     }
 
     await createAutomationLog('Delivery Status Updated', `${orderNo || taskId} delivery status changed to ${status}`);
   };
 
-  const updateDeliveryTaskStatus = async (task: DeliveryTaskRecord, status: DeliveryActionStatus, driverProfile?: DriverProfile) => {
+  const updateTaskStatus = async (
+    task: DeliveryTaskRecord,
+    status: DeliveryActionStatus,
+    driverProfile?: DriverProfile
+  ) => {
     const taskKey = getTaskId(task) || getTaskOrderNo(task);
     const linkedOrder = findLinkedOrder(task);
-
     if (!taskKey) {
-      setToast({ message: 'Delivery task is missing order details. Please refresh and try again.', type: 'error' });
+      setToast({ message: 'Delivery task is missing order details.', type: 'error' });
       return;
     }
-
     if (status === 'Assigned' && !driverProfile) {
-      setToast({ message: 'Please select a driver.', type: 'error' });
+      setToast({ message: 'Please select a driver or delivery method.', type: 'error' });
       return;
     }
 
     setUpdatingTaskId(taskKey);
     try {
       if (linkedOrder) {
-        await onUpdateDeliveryStatus(linkedOrder.id, status, driverProfile?.name, driverProfile ? { driverPhone: driverProfile.phone, driverType: driverProfile.type } : undefined);
+        await onUpdateDeliveryStatus(
+          linkedOrder.id,
+          status,
+          driverProfile?.name,
+          driverProfile ? { driverPhone: driverProfile.phone, driverType: driverProfile.type } : undefined
+        );
       } else {
         await updateFallbackDeliveryTask(task, status, driverProfile);
       }
-
       await reloadDeliveryTasks();
-      if (status === 'Assigned') setSelectedDriver((prev) => ({ ...prev, [taskKey]: '' }));
-      setToast({ message: `Delivery task ${getTaskOrderNo(task)} updated to ${status}.`, type: 'success' });
+      setSelectedDriver((current) => ({ ...current, [taskKey]: '' }));
+      const actionLabel = status === 'Collected' ? 'Collected' : status;
+      setToast({ message: `${getTaskOrderNo(task)} marked as ${actionLabel}.`, type: 'success' });
     } catch (error) {
       console.error('Delivery update error:', error);
-      const message = error instanceof Error ? error.message : 'Delivery update failed. Please try again.';
+      const message = error instanceof Error ? error.message : 'Delivery update failed.';
       setToast({ message, type: 'error' });
     } finally {
       setUpdatingTaskId('');
     }
   };
 
-  const copyText = async (label: string, value: string) => {
-    try {
-      await navigator.clipboard.writeText(value);
-      setToast({ message: `${label} copied.`, type: 'success' });
-    } catch {
-      setToast({ message: `Unable to copy ${label.toLowerCase()}.`, type: 'error' });
-    }
-  };
-
   const openWhatsApp = (phone: string) => {
-    const digits = phone.replace(/\D/g, '');
-    if (!digits) {
+    const normalized = normalizePhone(phone);
+    if (!normalized) {
       setToast({ message: 'Phone number is unavailable.', type: 'error' });
       return;
     }
-    window.open(`https://wa.me/${digits}`, '_blank', 'noopener,noreferrer');
+    window.open(`https://wa.me/${normalized}`, '_blank', 'noopener,noreferrer');
   };
 
-  const openMaps = (address: string) => {
-    if (!address || address === '-') {
-      setToast({ message: 'Address is unavailable.', type: 'error' });
-      return;
-    }
-    window.open(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(address)}`, '_blank', 'noopener,noreferrer');
+  const statusBadgeClass = (status: DeliveryStatus) => {
+    if (status === 'Delivered') return 'border-emerald-500/25 bg-emerald-500/10 text-emerald-200';
+    if (status === 'Collected') return 'border-emerald-500/25 bg-emerald-500/10 text-emerald-200';
+    if (status === 'Out for Delivery') return 'border-indigo-500/25 bg-indigo-500/10 text-indigo-200';
+    if (status === 'Assigned') return 'border-sky-500/25 bg-sky-500/10 text-sky-200';
+    return 'border-amber-500/20 bg-amber-500/10 text-amber-200';
   };
+
+  const renderDeliveryCard = (task: DeliveryTaskRecord, index: number) => {
+    const order = findLinkedOrder(task);
+    const orderNo = getTaskOrderNo(task);
+    const taskKey = getTaskId(task) || orderNo;
+    const customerName = readText(task.customer_name ?? task.customerName ?? order?.customerName, 'Customer');
+    const phone = readText(task.phone ?? order?.phone, 'No phone');
+    const address = readText(task.address ?? order?.address, 'Address to be confirmed');
+    const date = getTaskDate(task, order) || 'No date';
+    const time = getTaskTime(task, order) || 'No time';
+    const selfCollect = isSelfCollectTask(task, order);
+    const status = getStatus(task, order);
+    const driverName = selfCollect ? 'Self Collect' : getDriverName(task) || 'Unassigned';
+    const selectedProfile = driverProfiles.find((driver) => driver.id === selectedDriver[taskKey]);
+    const isUpdating = updatingTaskId === taskKey;
+
+    return (
+      <article key={`${taskKey}-${index}`} className="rounded-[18px] border border-[#334155] bg-[#111111] p-4 shadow-panel transition hover:border-[#C8A96B]/40">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="truncate text-base font-semibold text-white">{orderNo}</p>
+            <p className="mt-1 truncate text-sm text-slate-300">{customerName}</p>
+            <p className="mt-1 text-xs text-slate-500">{phone}</p>
+          </div>
+          <span className={`shrink-0 rounded-full border px-3 py-1 text-[11px] font-semibold ${statusBadgeClass(status)}`}>
+            {status}
+          </span>
+        </div>
+
+        <div className="mt-4 grid grid-cols-2 gap-3 rounded-[14px] border border-[#334155] bg-[#0F172A] p-3">
+          <div>
+            <p className="text-[10px] uppercase tracking-[0.14em] text-slate-500">Date</p>
+            <p className="mt-1 font-semibold text-white">{date}</p>
+          </div>
+          <div>
+            <p className="text-[10px] uppercase tracking-[0.14em] text-slate-500">Time</p>
+            <p className="mt-1 font-semibold text-[#E4C98E]">{time}</p>
+          </div>
+          <div>
+            <p className="text-[10px] uppercase tracking-[0.14em] text-slate-500">Type</p>
+            <p className="mt-1 font-semibold text-white">{selfCollect ? 'Self Collect' : 'Delivery'}</p>
+          </div>
+          <div>
+            <p className="text-[10px] uppercase tracking-[0.14em] text-slate-500">Driver / Method</p>
+            <p className="mt-1 truncate font-semibold text-white">{driverName}</p>
+          </div>
+        </div>
+
+        <div className="mt-3 rounded-[14px] border border-[#334155] bg-[#0F172A] p-3">
+          <p className="text-[10px] uppercase tracking-[0.14em] text-slate-500">{selfCollect ? 'Collection' : 'Address'}</p>
+          <p className="mt-1 line-clamp-2 text-sm leading-5 text-slate-300">{selfCollect ? 'Self Collect' : address}</p>
+        </div>
+
+        {!['Delivered', 'Collected'].includes(status) && (
+          <div className="mt-4 space-y-2 border-t border-[#334155] pt-3">
+            {!selfCollect && status === 'Pending' && (
+              <div className="grid gap-2 sm:grid-cols-[1fr_auto]">
+                <select
+                  value={selectedDriver[taskKey] || ''}
+                  onChange={(event) => setSelectedDriver((current) => ({ ...current, [taskKey]: event.target.value }))}
+                  className="rounded-xl border border-[#334155] bg-[#0F172A] px-3 py-2 text-xs text-white outline-none"
+                >
+                  <option value="">Select driver / method</option>
+                  {driverProfiles.map((driver) => (
+                    <option key={driver.id} value={driver.id}>{driver.name} - {driver.type}</option>
+                  ))}
+                </select>
+                <button type="button" onClick={() => updateTaskStatus(task, 'Assigned', selectedProfile)} disabled={isUpdating} className="rounded-xl bg-sky-500/10 px-4 py-2 text-xs font-semibold text-sky-200 hover:bg-sky-500/20 disabled:opacity-50">
+                  Assign Driver
+                </button>
+              </div>
+            )}
+
+            <div className="grid grid-cols-2 gap-2">
+              {selfCollect ? (
+                <button type="button" onClick={() => updateTaskStatus(task, 'Collected')} disabled={isUpdating} className="rounded-xl bg-emerald-500/10 px-3 py-2.5 text-xs font-semibold text-emerald-200 hover:bg-emerald-500/20 disabled:opacity-50">
+                  Mark Collected
+                </button>
+              ) : (
+                <>
+                  {status === 'Assigned' && (
+                    <button type="button" onClick={() => updateTaskStatus(task, 'Out for Delivery')} disabled={isUpdating} className="rounded-xl bg-indigo-500/10 px-3 py-2.5 text-xs font-semibold text-indigo-200 hover:bg-indigo-500/20 disabled:opacity-50">
+                      Mark Out for Delivery
+                    </button>
+                  )}
+                  {status === 'Out for Delivery' && (
+                    <button type="button" onClick={() => updateTaskStatus(task, 'Delivered')} disabled={isUpdating} className="rounded-xl bg-emerald-500/10 px-3 py-2.5 text-xs font-semibold text-emerald-200 hover:bg-emerald-500/20 disabled:opacity-50">
+                      Mark Delivered
+                    </button>
+                  )}
+                </>
+              )}
+              <button type="button" onClick={() => openWhatsApp(phone)} className="rounded-xl bg-emerald-500/10 px-3 py-2.5 text-xs font-semibold text-emerald-200 hover:bg-emerald-500/20">
+                WhatsApp
+              </button>
+            </div>
+          </div>
+        )}
+      </article>
+    );
+  };
+
+  const renderSection = (
+    title: string,
+    note: string,
+    tasks: DeliveryTaskRecord[],
+    accent: string,
+    emptyMessage: string
+  ) => (
+    <section className="space-y-3">
+      <div className="flex items-end justify-between gap-3 border-b border-[#334155] pb-2">
+        <div>
+          <h4 className={`text-lg font-semibold ${accent}`}>{title}</h4>
+          <p className="mt-1 text-xs text-slate-500">{note}</p>
+        </div>
+        <span className="rounded-full border border-[#334155] bg-[#111111] px-3 py-1 text-xs font-semibold text-slate-300">{tasks.length}</span>
+      </div>
+      {tasks.length > 0 ? (
+        <div className="grid gap-3 lg:grid-cols-2 2xl:grid-cols-3">
+          {tasks.map(renderDeliveryCard)}
+        </div>
+      ) : (
+        <div className="rounded-[16px] border border-dashed border-[#334155] bg-[#111111] px-5 py-6 text-center text-sm text-slate-500">{emptyMessage}</div>
+      )}
+    </section>
+  );
 
   return (
     <div className="space-y-4 bg-[#0F172A]">
       {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
 
       <section className="rounded-[20px] border border-[#334155] bg-[#111111] p-4 shadow-panel md:p-5">
-        <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div>
             <p className="text-xs uppercase tracking-[0.24em] text-[#C8A96B]">Delivery Operations</p>
-            <h3 className="mt-1.5 text-2xl font-semibold text-white">Delivery Command Center</h3>
-            <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-400">Assign drivers, track transit, and complete customer handoffs without horizontal scrolling.</p>
+            <h3 className="mt-1.5 text-2xl font-semibold text-white">Delivery Command Center V2</h3>
+            <p className="mt-2 text-sm text-slate-400">See today&apos;s delivery and self-collection work at a glance.</p>
           </div>
-          <div className="flex flex-wrap items-center gap-3">
-            <button
-              type="button"
-              onClick={reloadDeliveryTasks}
-              disabled={isLoading}
-              className="rounded-xl bg-[#C8A96B] px-4 py-2.5 text-sm font-semibold text-[#111111] transition hover:bg-[#d6b77d] disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {isLoading ? 'Refreshing...' : 'Refresh Deliveries'}
-            </button>
-            <span className="rounded-xl border border-[#C8A96B]/30 bg-[#C8A96B]/10 px-3.5 py-2.5 text-xs font-semibold text-[#E4C98E]">
-              Source: {hasLoadedSupabase ? 'Supabase' : 'Fallback'}
-            </span>
-          </div>
-        </div>
-      </section>
-
-      <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
-        {[
-          ['Today Deliveries', kpis.todayDeliveries],
-          ['Pending', kpis.pending],
-          ['In Transit', kpis.outForDelivery],
-          ['Delivered', kpis.delivered],
-          ['Self Collect', kpis.selfCollect],
-          ['Overdue', kpis.overdue]
-        ].map(([label, value]) => (
-          <div key={label} className="rounded-[16px] border border-[#334155] bg-[#111111] p-3.5 shadow-panel transition hover:border-[#C8A96B]/40">
-            <p className="text-[11px] uppercase tracking-[0.16em] text-slate-500">{label}</p>
-            <p className="mt-3 text-2xl font-semibold text-white">{value}</p>
-          </div>
-        ))}
-      </section>
-
-      <section className="rounded-[18px] border border-[#334155] bg-[#111111] p-3.5 shadow-panel">
-        <p className="text-xs uppercase tracking-[0.18em] text-[#C8A96B]">Delivery Timeline</p>
-        <div className="mt-3 grid gap-3 md:grid-cols-4">
-          {[
-            ['Today Jobs', kpis.todayDeliveries],
-            ['Assigned', kpis.assigned],
-            ['In Transit', kpis.outForDelivery],
-            ['Delivered', kpis.delivered]
-          ].map(([label, value], index) => (
-            <div key={label} className="relative rounded-[14px] border border-[#334155] bg-[#0F172A] p-3">
-              <div className="flex items-center justify-between gap-3">
-                <span className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">{label}</span>
-                <span className="rounded-full bg-[#C8A96B]/15 px-3 py-1 text-sm font-semibold text-[#E4C98E]">{value}</span>
-              </div>
-              {index < 3 && <div className="pointer-events-none absolute -right-2 top-1/2 hidden h-px w-4 bg-[#C8A96B]/40 md:block" />}
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex rounded-xl border border-[#334155] bg-[#0F172A] p-1">
+              <button type="button" onClick={() => setViewMode('active')} className={`rounded-lg px-3 py-2 text-xs font-semibold ${viewMode === 'active' ? 'bg-[#C8A96B] text-[#111111]' : 'text-slate-400'}`}>Active Deliveries</button>
+              <button type="button" onClick={() => setViewMode('all')} className={`rounded-lg px-3 py-2 text-xs font-semibold ${viewMode === 'all' ? 'bg-[#C8A96B] text-[#111111]' : 'text-slate-400'}`}>View All</button>
             </div>
-          ))}
+            <button type="button" onClick={reloadDeliveryTasks} disabled={isLoading} className="rounded-xl border border-[#C8A96B]/30 bg-[#C8A96B]/10 px-3.5 py-2.5 text-xs font-semibold text-[#E4C98E] disabled:opacity-50">
+              {isLoading ? 'Refreshing...' : 'Refresh'}
+            </button>
+            <span className="rounded-xl border border-[#334155] bg-[#0F172A] px-3.5 py-2.5 text-xs text-slate-400">Source: {hasLoadedSupabase ? 'Supabase' : 'Fallback'}</span>
+          </div>
         </div>
       </section>
 
-      <section className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
-        {tabs.map((tab) => (
-          <button
-            key={tab}
-            type="button"
-            onClick={() => setActiveTab(tab)}
-            className={`rounded-[16px] border p-3 text-left text-xs font-semibold transition ${
-              activeTab === tab
-                ? 'border-[#C8A96B]/70 bg-[#C8A96B]/10 text-[#E4C98E]'
-                : 'border-[#334155] bg-[#111111] text-slate-300 hover:border-[#C8A96B]/40 hover:text-white'
-            }`}
-          >
-            <span className="block uppercase tracking-[0.14em]">{tab}</span>
-            <span className="mt-2 block text-lg text-white">{tabCounts[tab]}</span>
-          </button>
+      <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+        {[
+          ['Today Jobs', kpis.todayJobs, 'Due today'],
+          ['Pending Assign', kpis.pendingAssign, 'Needs driver'],
+          ['Out for Delivery', kpis.outForDelivery, 'Currently moving'],
+          ['Self Collect', kpis.selfCollect, 'Customer pickup'],
+          ['Overdue', kpis.overdue, 'Past due and open']
+        ].map(([label, value, hint]) => (
+          <div key={label} className="rounded-[16px] border border-[#334155] bg-[#111111] p-3.5 shadow-panel">
+            <p className="text-[11px] uppercase tracking-[0.16em] text-slate-500">{label}</p>
+            <p className="mt-2 text-2xl font-semibold text-white">{value}</p>
+            <p className="mt-1 text-xs text-slate-500">{hint}</p>
+          </div>
         ))}
       </section>
 
-      <section className="grid grid-cols-1 gap-3 lg:grid-cols-2 2xl:grid-cols-3">
-        {isLoading && (
-          <div className="rounded-[18px] border border-white/10 bg-[#141414] p-6 text-center text-sm text-slate-400 lg:col-span-2 2xl:col-span-3">
-            Loading delivery tasks...
+      {isLoading && <div className="rounded-[18px] border border-[#334155] bg-[#111111] p-8 text-center text-sm text-slate-400">Loading delivery work...</div>}
+
+      {!isLoading && viewMode === 'active' && (
+        <>
+          {renderSection('OVERDUE', 'Past delivery date and still not delivered.', groups.overdue, 'text-rose-300', 'No overdue deliveries.')}
+          {renderSection('TODAY DELIVERY', 'Today delivery jobs, earliest time first.', groups.todayDelivery, 'text-[#E4C98E]', 'No deliveries scheduled for today.')}
+          {renderSection('TODAY SELF COLLECT', 'Customer collections scheduled today.', groups.todaySelfCollect, 'text-sky-300', 'No self collections scheduled for today.')}
+
+          <section className="overflow-hidden rounded-[18px] border border-[#334155] bg-[#111111] shadow-panel">
+            <button type="button" onClick={() => setUpcomingDeliveryOpen((value) => !value)} className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left hover:bg-white/[0.03]">
+              <div>
+                <p className="font-semibold text-white">UPCOMING DELIVERY ({groups.upcomingDelivery.length})</p>
+                <p className="mt-1 text-xs text-slate-500">Tomorrow and future unfinished delivery jobs.</p>
+              </div>
+              <span className="text-xs font-semibold text-[#E4C98E]">{upcomingDeliveryOpen ? 'Collapse' : 'Expand'}</span>
+            </button>
+            {upcomingDeliveryOpen && (
+              <div className="border-t border-[#334155] p-3.5">
+                {groups.upcomingDelivery.length > 0 ? (
+                  <div className="grid gap-3 lg:grid-cols-2 2xl:grid-cols-3">{groups.upcomingDelivery.map(renderDeliveryCard)}</div>
+                ) : <p className="py-5 text-center text-sm text-slate-500">No upcoming deliveries.</p>}
+              </div>
+            )}
+          </section>
+
+          <section className="overflow-hidden rounded-[18px] border border-[#334155] bg-[#111111] shadow-panel">
+            <button type="button" onClick={() => setUpcomingSelfCollectOpen((value) => !value)} className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left hover:bg-white/[0.03]">
+              <div>
+                <p className="font-semibold text-white">UPCOMING SELF COLLECT ({groups.upcomingSelfCollect.length})</p>
+                <p className="mt-1 text-xs text-slate-500">Tomorrow and future customer collections.</p>
+              </div>
+              <span className="text-xs font-semibold text-[#E4C98E]">{upcomingSelfCollectOpen ? 'Collapse' : 'Expand'}</span>
+            </button>
+            {upcomingSelfCollectOpen && (
+              <div className="border-t border-[#334155] p-3.5">
+                {groups.upcomingSelfCollect.length > 0 ? (
+                  <div className="grid gap-3 lg:grid-cols-2 2xl:grid-cols-3">{groups.upcomingSelfCollect.map(renderDeliveryCard)}</div>
+                ) : <p className="py-5 text-center text-sm text-slate-500">No upcoming self collections.</p>}
+              </div>
+            )}
+          </section>
+
+          <section className="overflow-hidden rounded-[18px] border border-[#334155] bg-[#111111] shadow-panel">
+            <button type="button" onClick={() => setCompletedOpen((value) => !value)} className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left hover:bg-white/[0.03]">
+              <div>
+                <p className="font-semibold text-white">DELIVERED / COMPLETED ({completedTasks.length})</p>
+                <p className="mt-1 text-xs text-slate-500">Completed handoffs stay hidden until needed.</p>
+              </div>
+              <span className="text-xs font-semibold text-emerald-300">{completedOpen ? 'Collapse' : 'Expand'}</span>
+            </button>
+            {completedOpen && (
+              <div className="border-t border-[#334155] p-3.5">
+                {completedTasks.length > 0 ? (
+                  <div className="grid gap-3 lg:grid-cols-2 2xl:grid-cols-3">{completedTasks.map(renderDeliveryCard)}</div>
+                ) : <p className="py-5 text-center text-sm text-slate-500">No completed deliveries.</p>}
+              </div>
+            )}
+          </section>
+        </>
+      )}
+
+      {!isLoading && viewMode === 'all' && (
+        <section className="space-y-3">
+          <div className="flex items-end justify-between gap-3 border-b border-[#334155] pb-2">
+            <div>
+              <h4 className="text-lg font-semibold text-white">ALL DELIVERIES</h4>
+              <p className="mt-1 text-xs text-slate-500">Active and historical delivery records.</p>
+            </div>
+            <span className="rounded-full border border-[#334155] bg-[#111111] px-3 py-1 text-xs font-semibold text-slate-300">{displayedTasks.length}</span>
           </div>
-        )}
-
-        {!isLoading && visibleTasks.length === 0 && (
-          <div className="rounded-[18px] border border-dashed border-[#334155] bg-[#111111] p-7 text-center lg:col-span-2 2xl:col-span-3">
-            <p className="text-xs uppercase tracking-[0.18em] text-[#C8A96B]">Delivery Queue</p>
-            <h4 className="mt-3 text-xl font-semibold text-white">No delivery tasks in this view</h4>
-            <p className="mt-2 text-sm text-slate-500">Switch pipeline filters or refresh when new orders are ready.</p>
-          </div>
-        )}
-
-        {!isLoading && visibleTasks.map((task, index) => {
-          const orderNo = getTaskOrderNo(task);
-          const linkedOrder = findLinkedOrder(task);
-          const customerName = readText(task.customer_name ?? task.customerName ?? linkedOrder?.customerName, '-');
-          const phone = readText(task.phone ?? linkedOrder?.phone, '-');
-          const address = readText(task.address ?? linkedOrder?.address, '-');
-          const deliveryDate = readText(task.delivery_date ?? task.deliveryDate ?? linkedOrder?.deliveryDate, '-');
-          const deliveryTime = readText(task.delivery_time ?? task.deliveryTime ?? linkedOrder?.deliveryTime, '-');
-          const readyTime = getTaskReadyTime(task, linkedOrder);
-          const status = normalizeDeliveryStatus(task.status ?? task.deliveryStatus);
-          const taskKey = getTaskId(task) || orderNo;
-          const cardKey = getTaskKey(task, index);
-          const isUpdating = updatingTaskId === taskKey;
-          const urgencyBadges = getUrgencyBadges(task, today);
-          const driverName = getDriverDisplayName(task);
-          const expanded = expandedTaskKey === cardKey;
-          const selectedProfile = getSelectedDriverProfile(selectedDriver[taskKey] || '');
-          const products = getOrderProducts(task, linkedOrder);
-
-          return (
-            <article
-              key={cardKey}
-              className="flex min-h-full flex-col rounded-[18px] border border-[#334155] bg-[#111111] p-3.5 text-sm text-slate-300 shadow-panel transition hover:border-[#C8A96B]/35"
-            >
-              <div className="flex items-start justify-between gap-3">
-                <div className="flex min-w-0 items-start gap-3">
-                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-[#C8A96B]/30 bg-[#C8A96B]/10 text-xs font-bold text-[#E4C98E]">LBL</div>
-                  <div className="min-w-0">
-                    <p className="text-[11px] uppercase tracking-[0.16em] text-[#C8A96B]">Order Number</p>
-                    <h4 className="mt-1 truncate text-lg font-semibold text-white">{orderNo}</h4>
-                  </div>
-                </div>
-                <span className={`shrink-0 rounded-full border px-3 py-1 text-xs font-semibold ${getStatusBadgeClass(status)}`}>
-                  {status}
-                </span>
-              </div>
-
-              <div className="mt-3 flex flex-wrap gap-2">
-                {urgencyBadges.map((badge) => (
-                  <span key={badge} className={`rounded-full border px-3 py-1 text-xs font-semibold ${getUrgencyBadgeClass(badge)}`}>
-                    {badge}
-                  </span>
-                ))}
-              </div>
-
-              <div className="mt-3 grid grid-cols-2 gap-2 rounded-[14px] border border-[#334155] bg-[#0F172A] p-2.5 lg:grid-cols-4">
-                <div>
-                  <p className="text-[10px] uppercase tracking-[0.12em] text-slate-500">Date</p>
-                  <p className="mt-1 truncate font-semibold text-white">{deliveryDate}</p>
-                </div>
-                <div>
-                  <p className="text-[10px] uppercase tracking-[0.12em] text-slate-500">Ready Time</p>
-                  <p className="mt-1 truncate font-semibold text-[#E4C98E]">{readyTime}</p>
-                </div>
-                <div>
-                  <p className="text-[10px] uppercase tracking-[0.12em] text-slate-500">Delivery Time</p>
-                  <p className="mt-1 truncate font-semibold text-[#E4C98E]">{deliveryTime}</p>
-                </div>
-                <div>
-                  <p className="text-[10px] uppercase tracking-[0.12em] text-slate-500">Driver</p>
-                  <p className={`mt-1 truncate font-semibold ${driverName === 'SELF COLLECT' ? 'text-[#E4C98E]' : 'text-white'}`}>{driverName}</p>
-                </div>
-              </div>
-
-              {expanded && (
-                <div className="mt-3 space-y-3 border-t border-[#334155] pt-3">
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    <div className="rounded-[16px] border border-[#334155] bg-[#0F172A] p-3">
-                      <p className="text-[11px] uppercase tracking-[0.14em] text-slate-500">Customer</p>
-                      <p className="mt-2 font-semibold text-white">{customerName}</p>
-                    </div>
-                    <div className="rounded-[16px] border border-[#334155] bg-[#0F172A] p-3">
-                      <p className="text-[11px] uppercase tracking-[0.14em] text-slate-500">Phone</p>
-                      <p className="mt-2 font-semibold text-white">{phone}</p>
-                    </div>
-                  </div>
-                  <div className="rounded-[16px] border border-[#334155] bg-[#0F172A] p-3">
-                    <p className="text-[11px] uppercase tracking-[0.14em] text-slate-500">Delivery Address</p>
-                    <p className="mt-2 text-sm leading-5 text-slate-300">{isSelfCollectTask(task) ? 'SELF COLLECT' : address}</p>
-                  </div>
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    <div className="rounded-[16px] border border-[#334155] bg-[#0F172A] p-3">
-                      <p className="text-[11px] uppercase tracking-[0.14em] text-slate-500">Invoice Number</p>
-                      <p className="mt-2 font-semibold text-white">{getInvoiceNo(task)}</p>
-                    </div>
-                    <div className="rounded-[16px] border border-[#334155] bg-[#0F172A] p-3">
-                      <p className="text-[11px] uppercase tracking-[0.14em] text-slate-500">Order Notes</p>
-                      <p className="mt-2 text-sm text-slate-300">{getTaskNotes(task, linkedOrder)}</p>
-                    </div>
-                  </div>
-                  <div className="rounded-[16px] border border-[#334155] bg-[#0F172A] p-3">
-                    <p className="text-[11px] uppercase tracking-[0.14em] text-slate-500">Products</p>
-                    <div className="mt-2 space-y-2">
-                      {Array.isArray(products) ? products.map((item) => (
-                        <p key={item} className="rounded-xl bg-white/5 px-3 py-2 text-sm font-semibold text-white">{item}</p>
-                      )) : <p className="rounded-xl bg-white/5 px-3 py-2 text-sm font-semibold text-white">{products}</p>}
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-                    <button onClick={() => openWhatsApp(phone)} className="rounded-xl bg-emerald-500/10 px-3 py-2 text-xs font-semibold text-emerald-200 transition hover:bg-emerald-500/20">WhatsApp</button>
-                    <button onClick={() => openMaps(address)} className="rounded-xl bg-indigo-500/10 px-3 py-2 text-xs font-semibold text-indigo-200 transition hover:bg-indigo-500/20">Google Maps</button>
-                    <button onClick={() => copyText('Phone', phone)} className="rounded-xl bg-white/5 px-3 py-2 text-xs font-semibold text-slate-200 transition hover:bg-white/10">Copy Phone</button>
-                    <button onClick={() => copyText('Address', address)} className="rounded-xl bg-white/5 px-3 py-2 text-xs font-semibold text-slate-200 transition hover:bg-white/10">Copy Address</button>
-                  </div>
-                </div>
-              )}
-
-              <div className="mt-auto flex flex-col gap-3 border-t border-[#334155] pt-4">
-                <button
-                  type="button"
-                  onClick={() => setExpandedTaskKey((current) => current === cardKey ? '' : cardKey)}
-                  className="rounded-xl border border-[#334155] px-4 py-2 text-xs font-semibold text-slate-300 transition hover:border-[#C8A96B]/40 hover:text-white"
-                >
-                  {expanded ? 'Collapse' : 'Expand'}
-                </button>
-
-                {status === 'Pending' && (
-                  <div className="grid gap-2 sm:grid-cols-[1fr_auto]">
-                    <select
-                      value={selectedDriver[taskKey] || ''}
-                      onChange={(event) => setSelectedDriver((prev) => ({ ...prev, [taskKey]: event.target.value }))}
-                      className="rounded-xl border border-[#334155] bg-[#0F172A] px-3 py-2 text-xs text-white outline-none"
-                    >
-                      <option value="">Select delivery method</option>
-                      {driverProfiles.map((driver) => (
-                        <option key={driver.id} value={driver.id}>
-                          {driver.name} - {driver.type}
-                        </option>
-                      ))}
-                    </select>
-                    <button
-                      type="button"
-                      onClick={() => updateDeliveryTaskStatus(task, 'Assigned', selectedProfile)}
-                      disabled={isUpdating}
-                      className="rounded-xl bg-sky-500/10 px-4 py-2 text-xs font-semibold text-sky-200 transition hover:bg-sky-500/20 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      Assign Driver
-                    </button>
-                  </div>
-                )}
-
-                {status === 'Assigned' && (
-                  <button
-                    type="button"
-                    onClick={() => updateDeliveryTaskStatus(task, isSelfCollectTask(task) ? 'Delivered' : 'Out for Delivery')}
-                    disabled={isUpdating}
-                    className="w-full rounded-xl bg-indigo-500/10 px-4 py-2 text-xs font-semibold text-indigo-200 transition hover:bg-indigo-500/20 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    {isSelfCollectTask(task) ? 'Mark Collected' : 'Out for Delivery'}
-                  </button>
-                )}
-
-                {status === 'Out for Delivery' && (
-                  <button
-                    type="button"
-                    onClick={() => updateDeliveryTaskStatus(task, 'Delivered')}
-                    disabled={isUpdating}
-                    className="w-full rounded-xl bg-emerald-500/10 px-4 py-2 text-xs font-semibold text-emerald-200 transition hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    Mark Delivered
-                  </button>
-                )}
-
-                {status === 'Delivered' && (
-                  <button
-                    type="button"
-                    disabled
-                    className="w-full cursor-not-allowed rounded-xl bg-emerald-500/10 px-4 py-2 text-xs font-semibold text-emerald-200 opacity-70"
-                  >
-                    Delivered
-                  </button>
-                )}
-              </div>
-            </article>
-          );
-        })}
-      </section>
+          {displayedTasks.length > 0 ? (
+            <div className="grid gap-3 lg:grid-cols-2 2xl:grid-cols-3">{displayedTasks.map(renderDeliveryCard)}</div>
+          ) : (
+            <div className="rounded-[16px] border border-dashed border-[#334155] bg-[#111111] px-5 py-8 text-center text-sm text-slate-500">No delivery records.</div>
+          )}
+        </section>
+      )}
     </div>
   );
 }

@@ -479,7 +479,13 @@ export default function QuotationPage() {
       loadSalesLeadsFromSupabase(),
       loadQuotationsFromSupabase()
     ]);
-    setLeads(leadData.filter((lead) => lead.status !== 'Archived'));
+    const visibleLeads = leadData.filter((lead) => lead.status !== 'Archived');
+    const requestedLeadId = localStorage.getItem('lbl_selected_sales_lead_id') || '';
+    setLeads(visibleLeads);
+    if (requestedLeadId && visibleLeads.some((lead) => String(lead.id) === requestedLeadId)) {
+      setLeadId(requestedLeadId);
+      localStorage.removeItem('lbl_selected_sales_lead_id');
+    }
     setQuotations(quotationData);
     setSelectedId((current) => current || quotationData[0]?.id || null);
   };

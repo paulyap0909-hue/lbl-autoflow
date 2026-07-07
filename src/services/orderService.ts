@@ -1,11 +1,13 @@
 import type { Order } from '../data/mockData';
 import { supabase } from '../lib/supabase';
+import { getMalaysiaDateTimeInputs } from '../utils/malaysiaDateTime';
 import { toSafeNumber } from '../utils/pricing';
 import { createAutomationLog } from './automationLogService';
 import { createOrUpdateCustomerForOrder } from './customerService';
-import { createDeliveryTaskForOrder, updateDeliveryTaskStatusForOrder } from './deliveryService';
+import { createDeliveryTaskForOrder, isSelfCollectOrder, updateDeliveryTaskStatusForOrder } from './deliveryService';
 import { createInvoiceForOrder, updateInvoiceStatusForOrder } from './invoiceService';
 import { createKitchenTaskForOrder, syncKitchenStatusForOrder } from './kitchenService';
+import { getCustomerWalletBalance, payOrderWithCustomerWallet } from './customerWalletService';
 
 type OrderRow = {
   id?: string | null;
@@ -31,6 +33,8 @@ type OrderRow = {
   totalAmount?: number | string | null;
   payment_status?: Order['paymentStatus'] | string | null;
   paymentStatus?: Order['paymentStatus'] | string | null;
+  payment_method?: Order['paymentMethod'] | string | null;
+  paymentMethod?: Order['paymentMethod'] | string | null;
   order_status?: Order['workflowStatus'] | string | null;
   workflowStatus?: Order['workflowStatus'] | string | null;
   kitchen_status?: Order['kitchenStatus'] | string | null;
@@ -65,6 +69,36 @@ type OrderRow = {
 };
 
 const ORDERS_TABLE = 'orders';
+const ORDER_NUMBER_PLACEHOLDERS = new Set(['Pending Order No', 'Missing Order No']);
+
+const getExplicitOrderNo = (order: Order) => {
+  const candidate = String(order.orderNo || order.id || '').trim();
+  return candidate && !ORDER_NUMBER_PLACEHOLDERS.has(candidate) ? candidate : null;
+};
+
+const getOrderNumberPrefix = () => {
+  const malaysiaDate = getMalaysiaDateTimeInputs().date.replace(/-/g, '').slice(2);
+  return `LBL-${malaysiaDate}-`;
+};
+
+export async function generateNextOrderNumber() {
+  const prefix = getOrderNumberPrefix();
+  const { data, error } = await supabase
+    .from(ORDERS_TABLE)
+    .select('order_no')
+    .like('order_no', `${prefix}%`)
+    .order('order_no', { ascending: false })
+    .limit(1);
+
+  if (error) {
+    console.error('Failed to generate order number:', error);
+    throw error;
+  }
+
+  const latestOrderNo = String(data?.[0]?.order_no ?? '');
+  const latestSequence = Number(latestOrderNo.match(/(\d+)$/)?.[1] ?? 0);
+  return `${prefix}${String(latestSequence + 1).padStart(4, '0')}`;
+}
 
 const nowTimestamp = () => {
   const now = new Date();
@@ -77,21 +111,16 @@ const normalizePaymentStatus = (status: OrderRow['payment_status']): Order['paym
 };
 
 const normalizeOrderStatus = (status: OrderRow['order_status']): Order['workflowStatus'] => {
-  const knownStatuses: Order['workflowStatus'][] = [
-    'New Order',
-    'Pending Payment',
-    'Paid',
-    'Preparing',
-    'Ready',
-    'Out For Delivery',
-    'Completed',
-    'Cancelled'
-  ];
-  return knownStatuses.includes(status as Order['workflowStatus'])
-    ? (status as Order['workflowStatus'])
-    : normalizePaymentStatus(status) === 'Paid'
-      ? 'Paid'
-      : 'Pending Payment';
+  const normalized = String(status ?? '').trim().toLowerCase();
+  if (normalized === 'new order' || normalized === 'new') return 'New Order';
+  if (normalized === 'pending payment' || normalized === 'pending') return 'Pending Payment';
+  if (normalized === 'paid' || normalized === 'confirmed') return 'Paid';
+  if (normalized === 'preparing' || normalized === 'in kitchen') return 'Preparing';
+  if (normalized === 'ready') return 'Ready';
+  if (normalized === 'out for delivery' || normalized === 'out_for_delivery') return 'Out For Delivery';
+  if (normalized === 'completed' || normalized === 'complete' || normalized === 'delivered') return 'Completed';
+  if (normalized === 'cancelled' || normalized === 'canceled') return 'Cancelled';
+  return normalizePaymentStatus(status) === 'Paid' ? 'Paid' : 'Pending Payment';
 };
 
 const normalizeKitchenStatus = (status: OrderRow['kitchen_status'], orderStatus: Order['workflowStatus']): Order['kitchenStatus'] => {
@@ -105,7 +134,11 @@ const normalizeKitchenStatus = (status: OrderRow['kitchen_status'], orderStatus:
 };
 
 const normalizeDeliveryStatus = (status: OrderRow['delivery_status'], orderStatus: Order['workflowStatus']): Order['deliveryStatus'] => {
-  if (status === 'Assigned' || status === 'Out for Delivery' || status === 'Delivered') return status;
+  const normalized = String(status ?? '').trim().toLowerCase();
+  if (normalized === 'assigned') return 'Assigned';
+  if (normalized === 'out for delivery' || normalized === 'out_for_delivery') return 'Out for Delivery';
+  if (normalized === 'collected') return 'Collected';
+  if (normalized === 'delivered' || normalized === 'completed' || normalized === 'complete') return 'Delivered';
   if (orderStatus === 'Out For Delivery') return 'Out for Delivery';
   if (orderStatus === 'Completed') return 'Delivered';
   return 'Pending';
@@ -146,7 +179,7 @@ export const orderFromRow = (row: OrderRow): Order => {
   const subtotal = toSafeNumber(row.subtotal ?? total - deliveryFee);
   const status = normalizeOrderStatus(row.order_status ?? row.workflowStatus);
   const paymentStatus = normalizePaymentStatus(row.payment_status ?? row.paymentStatus);
-  const orderId = row.order_no || row.orderNo || row.id || row.order_id || `LBL-${Date.now()}`;
+  const orderId = row.order_no || row.orderNo || 'Missing Order No';
   const flavourQuantities = normalizeFlavourQuantities(row.flavour_quantities ?? row.flavourQuantities);
   const flavours = flavourQuantities.length
     ? flavourQuantities.map((item) => item.name)
@@ -195,6 +228,7 @@ export const orderFromRow = (row: OrderRow): Order => {
       }
     ],
     paymentStatus,
+    paymentMethod: (row.payment_method ?? row.paymentMethod ?? undefined) as Order['paymentMethod'],
     kitchenStatus: normalizeKitchenStatus(row.kitchen_status ?? row.kitchenStatus, status),
     deliveryStatus: normalizeDeliveryStatus(row.delivery_status ?? row.deliveryStatus, status),
     remark: row.remark || undefined
@@ -202,7 +236,7 @@ export const orderFromRow = (row: OrderRow): Order => {
 };
 
 const getOrderRowBase = (order: Order) => ({
-  order_no: order.orderNo || order.id,
+  customer_id: order.customerId ?? null,
   customer_name: order.customerName,
   phone: order.phone,
   address: order.address,
@@ -213,7 +247,9 @@ const getOrderRowBase = (order: Order) => ({
   total: toSafeNumber(order.totalAmount),
   total_amount: toSafeNumber(order.totalAmount),
   payment_status: order.paymentStatus,
+  ...(order.paymentMethod ? { payment_method: order.paymentMethod } : {}),
   order_status: order.workflowStatus,
+  workflow_status: order.workflowStatus,
   kitchen_status: order.kitchenStatus,
   delivery_status: order.deliveryStatus,
   product: order.product,
@@ -233,6 +269,7 @@ const getOrderRowBase = (order: Order) => ({
 
 export const orderToCreateRow = (order: Order) => ({
   ...getOrderRowBase(order),
+  order_no: getExplicitOrderNo(order),
   created_at: new Date().toISOString()
 });
 
@@ -469,61 +506,88 @@ export async function loadOrdersFromSupabase() {
 }
 
 export async function createOrderInSupabase(order: Order) {
-  const orderNo = order.orderNo || order.id;
-  const { data: existingOrder, error: existingError } = await supabase
-    .from(ORDERS_TABLE)
-    .select('*')
-    .eq('order_no', orderNo)
-    .maybeSingle();
+  const explicitOrderNo = getExplicitOrderNo(order);
 
-  if (existingError) {
-    console.error('Failed to check existing order:', existingError);
-    throw existingError;
+  if (explicitOrderNo) {
+    const { data: existingOrder, error: existingError } = await supabase
+      .from(ORDERS_TABLE)
+      .select('*')
+      .eq('order_no', explicitOrderNo)
+      .maybeSingle();
+
+    if (existingError) {
+      console.error('Failed to check existing order:', existingError);
+      throw existingError;
+    }
+
+    if (existingOrder) {
+      console.log('Order inserted', existingOrder);
+      return {
+        ...order,
+        ...orderFromRow(existingOrder as OrderRow),
+        product: order.product,
+        flavours: order.flavours,
+        flavourQuantities: order.flavourQuantities,
+        quantity: order.quantity,
+        unitPrice: order.unitPrice,
+        originalUnitPrice: order.originalUnitPrice,
+        finalUnitPrice: order.finalUnitPrice,
+        discountType: order.discountType,
+        discountValue: order.discountValue,
+        discountAmount: order.discountAmount,
+        discountReason: order.discountReason,
+        originalSubtotal: order.originalSubtotal,
+        finalSubtotal: order.finalSubtotal,
+        remark: order.remark
+      };
+    }
   }
 
-  if (existingOrder) {
-    console.log('Order inserted', existingOrder);
-    return {
-      ...order,
-      ...orderFromRow(existingOrder as OrderRow),
-      product: order.product,
-      flavours: order.flavours,
-      flavourQuantities: order.flavourQuantities,
-      quantity: order.quantity,
-      unitPrice: order.unitPrice,
-      originalUnitPrice: order.originalUnitPrice,
-      finalUnitPrice: order.finalUnitPrice,
-      discountType: order.discountType,
-      discountValue: order.discountValue,
-      discountAmount: order.discountAmount,
-      discountReason: order.discountReason,
-      originalSubtotal: order.originalSubtotal,
-      finalSubtotal: order.finalSubtotal,
-      remark: order.remark
+  let data: OrderRow | null = null;
+  let insertError: unknown = null;
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const orderNo = explicitOrderNo || await generateNextOrderNumber();
+    const createPayload = {
+      ...orderToCreateRow(order),
+      order_no: orderNo
     };
+    const result = await supabase
+      .from(ORDERS_TABLE)
+      .insert(createPayload)
+      .select()
+      .single();
+
+    if (!result.error) {
+      data = result.data as OrderRow;
+      insertError = null;
+      break;
+    }
+
+    insertError = result.error;
+    if (explicitOrderNo || result.error.code !== '23505') break;
   }
 
-  const { data, error } = await supabase
-    .from(ORDERS_TABLE)
-    .insert(orderToCreateRow(order))
-    .select()
-    .single();
-
-  if (error) {
+  if (insertError || !data) {
+    const error = insertError as { message?: string; code?: string; details?: string; hint?: string } | null;
     console.error('Failed to create order in Supabase full error:', {
-  message: error?.message,
-  code: error?.code,
-  details: error?.details,
-  hint: error?.hint,
-  error,
-});
-    throw error;
+      message: error?.message,
+      code: error?.code,
+      details: error?.details,
+      hint: error?.hint,
+      error
+    });
+    throw insertError || new Error('Order creation returned no record.');
+  }
+
+  if (!data.order_no || !String(data.order_no).trim()) {
+    throw new Error('Order creation failed: order_no was not generated.');
   }
 
   console.log('Order inserted', data);
   return {
     ...order,
-    ...orderFromRow(data as OrderRow),
+    ...orderFromRow(data),
     product: order.product,
     flavours: order.flavours,
     flavourQuantities: order.flavourQuantities,
@@ -561,6 +625,38 @@ export async function updateOrderInSupabase(order: Order) {
 
 export async function deleteOrderFromSupabase(order: Order) {
   const lookup = getOrderLookup(order);
+  const numericOrderId = Number(order.supabaseId || (lookup.column === 'id' ? lookup.value : ''));
+  const orderNo = String(order.orderNo || (lookup.column === 'order_no' ? lookup.value : order.id) || '').trim();
+
+  const deleteRelatedRows = async (
+    table: 'invoices' | 'kitchen_tasks' | 'delivery_tasks',
+    column: 'order_id' | 'order_no',
+    value: string | number
+  ) => {
+    const { error } = await supabase.from(table).delete().eq(column, value);
+    if (error) {
+      console.error(`Failed to delete ${table} for order:`, {
+        orderId: Number.isFinite(numericOrderId) ? numericOrderId : null,
+        orderNo,
+        column,
+        value,
+        error
+      });
+      throw error;
+    }
+  };
+
+  if (Number.isFinite(numericOrderId)) {
+    await deleteRelatedRows('invoices', 'order_id', numericOrderId);
+    await deleteRelatedRows('kitchen_tasks', 'order_id', numericOrderId);
+    await deleteRelatedRows('delivery_tasks', 'order_id', numericOrderId);
+  }
+
+  if (orderNo) {
+    await deleteRelatedRows('kitchen_tasks', 'order_no', orderNo);
+    await deleteRelatedRows('delivery_tasks', 'order_no', orderNo);
+  }
+
   const { error } = await supabase.from(ORDERS_TABLE).delete().eq(lookup.column, lookup.value);
   if (error) {
     console.error('Failed to delete order from Supabase:', error);
@@ -594,3 +690,139 @@ export async function createFullOrderWorkflow(order: Order, existingOrders: Orde
 }
 
 export const createOrderWorkflow = createFullOrderWorkflow;
+
+export type OrderOperationalWorkflowResult = {
+  savedOrder: Order;
+  warnings: string[];
+  customerSynced: boolean;
+  kitchenTaskSynced: boolean;
+  deliveryTaskSynced: boolean;
+};
+
+export async function createOrderOperationalWorkflow(order: Order, existingOrders: Order[] = []) {
+  console.log('Creating order operational workflow without invoice', order);
+  const existingCustomer = existingOrders.some((item) => item.phone.trim() === order.phone.trim());
+  const usesCustomerWallet = order.paymentMethod === 'Customer Wallet';
+  if (usesCustomerWallet) {
+    if (!order.customerId) throw new Error('Select an existing customer to use Customer Wallet.');
+    const walletBalance = await getCustomerWalletBalance(order.customerId);
+    if (walletBalance < order.totalAmount) throw new Error('Insufficient wallet balance');
+  }
+
+  const orderForInsert = usesCustomerWallet
+    ? { ...order, paymentStatus: 'Pending' as const, workflowStatus: 'Pending Payment' as const }
+    : order;
+  let savedOrder = await createOrderInSupabase(orderForInsert);
+
+  if (usesCustomerWallet) {
+    if (!savedOrder.supabaseId || !order.customerId) {
+      throw new Error('Order created, but wallet payment could not be linked. Please contact an administrator.');
+    }
+    await payOrderWithCustomerWallet({
+      customerId: order.customerId,
+      orderId: savedOrder.supabaseId,
+      amount: order.totalAmount,
+      remark: `Wallet payment for ${savedOrder.orderNo || savedOrder.id}`
+    });
+    savedOrder = {
+      ...savedOrder,
+      customerId: order.customerId,
+      paymentStatus: 'Paid',
+      paymentMethod: 'Customer Wallet',
+      workflowStatus: 'Paid'
+    };
+  }
+  console.log('Order Created', {
+    orderId: savedOrder.supabaseId,
+    orderNo: savedOrder.orderNo || savedOrder.id,
+    fulfillmentType: isSelfCollectOrder(savedOrder) ? 'Self Collect' : 'Delivery'
+  });
+  const [customerResult, kitchenResult, deliveryResult] = await Promise.allSettled([
+    createOrUpdateCustomerForOrder(savedOrder),
+    createKitchenTaskForOrder(savedOrder),
+    createDeliveryTaskForOrder(savedOrder)
+  ]);
+  const warnings: string[] = [];
+
+  if (customerResult.status === 'rejected') {
+    console.error('Order created but customer sync failed:', {
+      orderId: savedOrder.supabaseId,
+      orderNo: savedOrder.orderNo,
+      error: customerResult.reason
+    });
+    warnings.push('customer sync');
+  }
+  if (kitchenResult.status === 'rejected') {
+    console.error('Order created but kitchen task sync failed:', {
+      orderId: savedOrder.supabaseId,
+      orderNo: savedOrder.orderNo,
+      product: savedOrder.product,
+      quantity: savedOrder.quantity,
+      error: kitchenResult.reason
+    });
+    warnings.push('kitchen workflow');
+  } else {
+    console.log('Kitchen Task Created', {
+      orderId: savedOrder.supabaseId,
+      orderNo: savedOrder.orderNo || savedOrder.id,
+      task: kitchenResult.value
+    });
+  }
+  if (deliveryResult.status === 'rejected') {
+    console.error('Delivery Task Failed', {
+      orderId: savedOrder.supabaseId,
+      orderNo: savedOrder.orderNo,
+      product: savedOrder.product,
+      quantity: savedOrder.quantity,
+      error: deliveryResult.reason
+    });
+    warnings.push('delivery workflow');
+  } else if (deliveryResult.value) {
+    console.log('Delivery Task Created', {
+      orderId: savedOrder.supabaseId,
+      orderNo: savedOrder.orderNo || savedOrder.id,
+      task: deliveryResult.value
+    });
+  } else {
+    console.log('Delivery Task Skipped', {
+      orderId: savedOrder.supabaseId,
+      orderNo: savedOrder.orderNo || savedOrder.id,
+      reason: 'Self Collect order'
+    });
+  }
+
+  await safeSideEffect('Automation log', async () =>
+    createAutomationLog(
+      'New Order Created',
+      warnings.length
+        ? `Order created with workflow warning: ${warnings.join(', ')}`
+        : 'Order, kitchen task and delivery task created'
+    )
+  );
+  await safeSideEffect('Customer automation log', async () =>
+    createAutomationLog(
+      existingCustomer ? 'Customer Updated' : 'Customer Created',
+      `${savedOrder.customerName} (${savedOrder.phone})`
+    )
+  );
+  if (kitchenResult.status === 'fulfilled') {
+    await safeSideEffect('Kitchen automation log', async () =>
+      createAutomationLog('Kitchen Task Created', `Kitchen task created for ${savedOrder.orderNo || savedOrder.id}`)
+    );
+  }
+  if (deliveryResult.status === 'fulfilled' && deliveryResult.value) {
+    await safeSideEffect('Delivery automation log', async () =>
+      createAutomationLog('Delivery Task Created', `Delivery task created for ${savedOrder.orderNo || savedOrder.id}`)
+    );
+  }
+
+  const result: OrderOperationalWorkflowResult = {
+    savedOrder,
+    warnings,
+    customerSynced: customerResult.status === 'fulfilled',
+    kitchenTaskSynced: kitchenResult.status === 'fulfilled',
+    deliveryTaskSynced: deliveryResult.status === 'fulfilled'
+  };
+  console.log('Operational workflow completed without invoice', result);
+  return result;
+}

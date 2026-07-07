@@ -79,7 +79,8 @@ export default function LuxuryInvoicePreviewModal({ order, invoice, onClose, onD
                 <div className="ml-auto flex h-20 w-20 items-center justify-center rounded-full border border-[#c9a45d] text-2xl font-semibold tracking-widest text-[#9a7637]">
                   LBL
                 </div>
-                <p className="mt-5 text-sm font-semibold">{invoice.invoice_no}</p>
+                <p className="mt-5 text-xs uppercase tracking-[0.18em] text-[#9a7637]">Invoice No</p>
+                <p className="mt-1 text-sm font-semibold">{invoice.invoice_no}</p>
                 <p className="mt-1 text-sm text-[#6d5c49]">{formatDate(invoice.invoice_date)}</p>
               </div>
             </header>
@@ -91,8 +92,8 @@ export default function LuxuryInvoicePreviewModal({ order, invoice, onClose, onD
                 <p className="mt-1 text-sm text-[#4b4033]">{order.phone}</p>
               </div>
               <div>
-                <p className="text-xs uppercase tracking-[0.24em] text-[#9a7637]">Order</p>
-                <p className="mt-3 text-sm text-[#4b4033]">Order No: {order.orderNo || order.id}</p>
+                <p className="text-xs uppercase tracking-[0.24em] text-[#9a7637]">Order Ref</p>
+                <p className="mt-3 text-sm text-[#4b4033]">{order.orderNo || order.id}</p>
                 <p className="mt-1 text-sm text-[#4b4033]">Delivery: {order.deliveryDate || '-'} {order.deliveryTime || ''}</p>
               </div>
             </section>

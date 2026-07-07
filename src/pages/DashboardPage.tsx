@@ -27,6 +27,7 @@ import { format, isValid, parseISO } from 'date-fns';
 import type { Customer, DeliveryTask, KitchenTask, Order } from '../data/mockData';
 import type { InvoiceRecord } from '../services/invoiceService';
 import { loadSalesLeadsFromSupabase, type SalesLead } from '../services/salesLeadService';
+import { getOrderIdentityKeys, isActiveOrder } from '../utils/orderLifecycle';
 import { toSafeNumber } from '../utils/pricing';
 
 type DashboardPageProps = {
@@ -428,16 +429,22 @@ export default function DashboardPage({
     const weekStart = format(new Date(Date.now() - 6 * 86400000), 'yyyy-MM-dd');
     const terminalStatuses = ['completed', 'delivered', 'cancelled', 'canceled'];
     const completedStatuses = ['completed', 'delivered'];
-    const todayOrders = orders.filter((order) => orderCreatedKey(order) === today);
-    const productionWeekOrders = orders.filter((order) => {
+    const dashboardOrders = orders.filter(isActiveOrder);
+    const dashboardOrderKeys = new Set(dashboardOrders.flatMap(getOrderIdentityKeys));
+    const dashboardInvoices = invoices.filter((invoice) => {
+      const orderId = invoice.order_id;
+      return orderId !== null && orderId !== undefined && dashboardOrderKeys.has(String(orderId));
+    });
+    const todayOrders = dashboardOrders.filter((order) => orderCreatedKey(order) === today);
+    const productionWeekOrders = dashboardOrders.filter((order) => {
       const key = getOrderDeliveryKey(order) || orderCreatedKey(order);
       return key >= weekStart && key <= today;
     });
-    const productionTodayOrders = orders.filter(
+    const productionTodayOrders = dashboardOrders.filter(
       (order) => (getOrderDeliveryKey(order) || orderCreatedKey(order)) === today
     );
-    const monthOrders = orders.filter((order) => orderCreatedKey(order).startsWith(monthPrefix));
-    const pendingOrders = orders.filter(
+    const monthOrders = dashboardOrders.filter((order) => orderCreatedKey(order).startsWith(monthPrefix));
+    const pendingOrders = dashboardOrders.filter(
       (order) => !terminalStatuses.includes(getOrderOperationalStatus(order))
     ).length;
 
@@ -466,7 +473,7 @@ export default function DashboardPage({
     const topProductWeek = getTopLabel(Array.from(productTotals, ([label, value]) => ({ label, value })));
     const topFlavour = getTopLabel(Array.from(flavourTotals, ([label, value]) => ({ label, value })));
 
-    const tomorrowProductionQuantity = orders
+    const tomorrowProductionQuantity = dashboardOrders
       .filter((order) => getOrderDeliveryKey(order) === tomorrow)
       .reduce((sum, order) => sum + toSafeNumber(order.quantity), 0);
 
@@ -507,7 +514,7 @@ export default function DashboardPage({
       return status !== 'Delivered' && dueAt >= now && dueAt <= now + 2 * 60 * 60 * 1000;
     }).length;
 
-    const pendingPaymentOrders = orders.filter(
+    const pendingPaymentOrders = dashboardOrders.filter(
       (order) =>
         getPaymentStatus(order) !== 'paid' &&
         !['cancelled', 'canceled'].includes(getOrderOperationalStatus(order))
@@ -517,8 +524,8 @@ export default function DashboardPage({
       0
     );
     const monthToDateSales = monthOrders.reduce((sum, order) => sum + getOrderAmount(order), 0);
-    const averageOrderValue = orders.length
-      ? orders.reduce((sum, order) => sum + getOrderAmount(order), 0) / orders.length
+    const averageOrderValue = dashboardOrders.length
+      ? dashboardOrders.reduce((sum, order) => sum + getOrderAmount(order), 0) / dashboardOrders.length
       : 0;
 
     const repeatCustomers = customers.filter((customer) => toSafeNumber(customer.totalOrders) > 1);
@@ -548,6 +555,16 @@ export default function DashboardPage({
     ).length;
     const quotationsPending = activeLeads.filter((lead) => lead.status === 'Quoted').length;
     const wonLeads = activeLeads.filter((lead) => lead.status === 'Won').length;
+    const needContactToday = activeLeads.filter(
+      (lead) => lead.status === 'New' && !lead.lastContactDate
+    ).length;
+    const followUpToday = activeLeads.filter(
+      (lead) => dateKeyFromValue(lead.nextFollowUpDate) === today
+    ).length;
+    const overdueLeads = activeLeads.filter((lead) => {
+      const followUpDate = dateKeyFromValue(lead.nextFollowUpDate);
+      return Boolean(followUpDate && followUpDate < today && !['Won', 'Lost'].includes(lead.status));
+    }).length;
     const corporatePipelineValue = activeLeads
       .filter((lead) => !['Won', 'Lost'].includes(lead.status))
       .reduce((sum, lead) => sum + toSafeNumber(lead.potentialValue), 0);
@@ -589,10 +606,10 @@ export default function DashboardPage({
         return b.leadScore - a.leadScore;
       });
     const followUpLeads = followUpLeadsAll.slice(0, 6);
-    const readyDeliveryOrders = orders.filter(
+    const readyDeliveryOrders = dashboardOrders.filter(
       (order) => getOrderReadyStatus(order) && order.deliveryStatus !== 'Delivered'
     );
-    const completedOrders = orders.filter((order) =>
+    const completedOrders = dashboardOrders.filter((order) =>
       completedStatuses.includes(getOrderOperationalStatus(order))
     ).length;
 
@@ -609,22 +626,22 @@ export default function DashboardPage({
       )
     );
     const invoiceOrderKeys = new Set(
-      invoices.flatMap((invoice) =>
+      dashboardInvoices.flatMap((invoice) =>
         [invoice.order_id].filter(Boolean).map((value) => String(value))
       )
     );
-    const activeOrders = orders.filter(
+    const operationalActiveOrders = dashboardOrders.filter(
       (order) => !terminalStatuses.includes(getOrderOperationalStatus(order))
     );
-    const ordersWithoutInvoice = orders.filter((order) => {
+    const ordersWithoutInvoice = dashboardOrders.filter((order) => {
       const keys = linkedOrderKeys(order);
       return keys.length > 0 && !keys.some((key) => invoiceOrderKeys.has(key));
     }).length;
-    const ordersWithoutKitchenTask = activeOrders.filter((order) => {
+    const ordersWithoutKitchenTask = operationalActiveOrders.filter((order) => {
       const keys = linkedOrderKeys(order);
       return keys.length > 0 && !keys.some((key) => kitchenTaskKeys.has(key));
     }).length;
-    const ordersWithoutDeliveryTask = activeOrders.filter((order) => {
+    const ordersWithoutDeliveryTask = operationalActiveOrders.filter((order) => {
       const keys = linkedOrderKeys(order);
       return keys.length > 0 && !keys.some((key) => deliveryTaskKeys.has(key));
     }).length;
@@ -634,7 +651,7 @@ export default function DashboardPage({
       date.setHours(12, 0, 0, 0);
       date.setDate(date.getDate() + index);
       const key = format(date, 'yyyy-MM-dd');
-      const dayOrders = orders.filter((order) => getOrderDeliveryKey(order) === key);
+      const dayOrders = dashboardOrders.filter((order) => getOrderDeliveryKey(order) === key);
       const dayDeliveries = (deliveryTasks as DashboardDeliveryTask[]).filter(
         (task) => dateKeyFromValue(task.delivery_date ?? task.deliveryDate) === key
       );
@@ -711,10 +728,10 @@ export default function DashboardPage({
     ];
 
     const topOpportunities = [
-      { id: 'hot-leads', label: 'Hot corporate leads', value: hotLeads, hint: 'Prioritize direct outreach', page: 'sales-crm' },
-      { id: 'warm-leads', label: 'Warm corporate leads', value: warmLeads, hint: 'Move toward tasting or quote', page: 'sales-crm' },
-      { id: 'pending-quotes', label: 'Pending quotations', value: quotationsPending, hint: 'Follow up open proposals', page: 'quotations' },
-      { id: 'follow-ups-due', label: 'Follow-ups due', value: followUpDueCount, hint: 'Complete scheduled touchpoints', page: 'follow-up-tasks' },
+      { id: 'need-contact', label: 'Need contact today', value: needContactToday, hint: 'Start first corporate outreach', page: 'sales-crm' },
+      { id: 'follow-up-today', label: 'Follow up today', value: followUpToday, hint: 'Complete scheduled lead contact', page: 'sales-crm' },
+      { id: 'overdue-leads', label: 'Overdue leads', value: overdueLeads, hint: 'Recover missed follow-ups', page: 'sales-crm' },
+      { id: 'pending-quotes', label: 'Quoted leads pending response', value: quotationsPending, hint: 'Follow up open proposals', page: 'sales-crm' },
       { id: 'repeat-customers', label: 'Repeat customers', value: repeatCustomers.length, hint: 'Offer the next order occasion', page: 'customers' },
       { id: 'inactive-vip', label: 'Inactive VIP customers', value: inactiveVipCustomers.length, hint: 'Re-engage high-value customers', page: 'customers' }
     ];
@@ -742,11 +759,11 @@ export default function DashboardPage({
         : null,
       followUpDueCount > 0
         ? {
-            id: 'follow-up-tasks',
-            label: 'Follow-up tasks due',
+            id: 'lead-follow-ups',
+            label: 'Lead follow-ups due',
             value: followUpDueCount,
-            hint: 'Complete today’s sales follow-ups',
-            page: 'follow-up-tasks',
+            hint: 'Complete today’s Lead Center follow-ups',
+            page: 'sales-crm',
             tone: 'warning' as const
           }
         : null,
@@ -795,9 +812,9 @@ export default function DashboardPage({
     return {
       today,
       todaySales: todayOrders.reduce((sum, order) => sum + getOrderAmount(order), 0),
-      totalSales: orders.reduce((sum, order) => sum + getOrderAmount(order), 0),
+      totalSales: dashboardOrders.reduce((sum, order) => sum + getOrderAmount(order), 0),
       pendingOrders,
-      readyForDelivery: orders.filter((order) => getOrderReadyStatus(order)).length,
+      readyForDelivery: dashboardOrders.filter((order) => getOrderReadyStatus(order)).length,
       businessHealth: {
         monthToDateSales,
         pendingPaymentAmount,
@@ -843,7 +860,7 @@ export default function DashboardPage({
   }, [customers, deliveryTasks, followUpDueCount, invoices, kitchenTasks, orders, salesLeads]);
 
   const findOrder = (task: DashboardKitchenTask) =>
-    orders.find((order) => {
+    orders.filter(isActiveOrder).find((order) => {
       const taskOrderId = String(task.order_id ?? task.orderId ?? '');
       const taskOrderNo = String(task.order_no ?? '');
       return [order.id, order.supabaseId, order.orderNo]
@@ -1373,7 +1390,7 @@ export default function DashboardPage({
           title="Lead Quality & Conversion"
           items={[
             {
-              label: 'Corporate Leads',
+              label: 'Lead Center',
               value: analytics.corporateIntelligence.totalLeads,
               hint: 'Excluding archived'
             },

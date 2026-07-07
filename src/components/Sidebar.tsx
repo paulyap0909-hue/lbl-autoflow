@@ -1,22 +1,17 @@
 import React from 'react';
 import {
-  BarChart3,
+  BadgeDollarSign,
   Building2,
-  Boxes,
   Calculator,
-  CalendarDays,
   ChefHat,
-  ClipboardCheck,
-  FileText,
-  Factory,
   Gauge,
   LogOut,
   MessageCircle,
+  Megaphone,
   PackageSearch,
   ReceiptText,
-  Settings,
+  ScrollText,
   ShoppingBag,
-  Sparkles,
   Truck,
   UserRoundCog,
   UsersRound
@@ -27,7 +22,7 @@ import type { CurrentUser } from '../pages/LoginPage';
 type NavItem = {
   id: string;
   label: string;
-  section: 'Overview' | 'Operations' | 'Customers' | 'Business' | 'Production' | 'System';
+  section: 'Overview' | 'Operations' | 'Customers' | 'Sales' | 'Business' | 'Production';
   icon: LucideIcon;
 };
 
@@ -38,6 +33,8 @@ type SidebarProps = {
   allowedPages: string[];
   onLogout: () => void;
   followUpBadge?: number;
+  variant?: 'desktop' | 'drawer';
+  onNavigate?: () => void;
 };
 
 const navItems: NavItem[] = [
@@ -45,37 +42,51 @@ const navItems: NavItem[] = [
   { id: 'orders', label: 'Orders', section: 'Operations', icon: ShoppingBag },
   { id: 'kitchen', label: 'Kitchen Queue', section: 'Operations', icon: ChefHat },
   { id: 'delivery', label: 'Delivery', section: 'Operations', icon: Truck },
-  { id: 'invoices', label: 'Invoices', section: 'Operations', icon: ReceiptText },
   { id: 'customers', label: 'Customers', section: 'Customers', icon: UsersRound },
-  { id: 'sales-crm', label: 'Corporate Leads', section: 'Customers', icon: UserRoundCog },
-  { id: 'whatsapp-crm', label: 'WhatsApp CRM', section: 'Customers', icon: MessageCircle },
-  { id: 'follow-up-tasks', label: 'Follow-up Tasks', section: 'Customers', icon: ClipboardCheck },
-  { id: 'sales-dashboard', label: 'Sales Pipeline', section: 'Customers', icon: BarChart3 },
-  { id: 'corporate-accounts', label: 'Corporate Accounts', section: 'Customers', icon: Building2 },
-  { id: 'quotations', label: 'Quotations', section: 'Business', icon: FileText },
+  { id: 'sales-crm', label: 'Lead Center', section: 'Sales', icon: UserRoundCog },
+  { id: 'corporate-accounts', label: 'Corporate Accounts', section: 'Sales', icon: Building2 },
+  { id: 'whatsapp-assistant', label: 'WhatsApp Assistant', section: 'Sales', icon: MessageCircle },
+  { id: 'reports', label: 'Reports Center', section: 'Business', icon: ScrollText },
+  { id: 'meta-ads', label: 'Meta Ads Center', section: 'Business', icon: Megaphone },
+  { id: 'invoices', label: 'Invoices', section: 'Business', icon: ReceiptText },
   { id: 'products', label: 'Products', section: 'Production', icon: PackageSearch },
-  { id: 'production-center', label: 'Production Center', section: 'Production', icon: Factory },
   { id: 'recipe-calculator', label: 'Recipe Calculator', section: 'Production', icon: Calculator },
-  { id: 'events', label: 'Events', section: 'Production', icon: CalendarDays },
-  { id: 'automation', label: 'Automation Center', section: 'System', icon: Sparkles },
-  { id: 'templates', label: 'WhatsApp Templates', section: 'System', icon: Boxes },
-  { id: 'settings', label: 'Settings', section: 'System', icon: Settings }
+  { id: 'cost-profit-calculator', label: 'Cost & Profit Calculator', section: 'Production', icon: BadgeDollarSign },
 ];
 
 const sections: NavItem['section'][] = [
   'Overview',
   'Operations',
   'Customers',
+  'Sales',
   'Business',
-  'Production',
-  'System'
+  'Production'
 ];
 
-export default function Sidebar({ active, onSelect, currentUser, allowedPages, onLogout, followUpBadge = 0 }: SidebarProps) {
+export default function Sidebar({
+  active,
+  onSelect,
+  currentUser,
+  allowedPages,
+  onLogout,
+  followUpBadge = 0,
+  variant = 'desktop',
+  onNavigate
+}: SidebarProps) {
   const visibleItems = navItems.filter((item) => allowedPages.includes(item.id));
+  const handleSelect = (id: string) => {
+    onSelect(id);
+    onNavigate?.();
+  };
 
   return (
-    <aside className="flex w-full flex-col border-b border-[#23252a] bg-[#010102] p-3 text-sm text-[#f7f8f8] md:sticky md:top-0 md:h-screen md:w-[240px] md:shrink-0 md:border-b-0 md:border-r md:p-3.5">
+    <aside
+      className={
+        variant === 'drawer'
+          ? 'flex h-full w-full flex-col bg-[#010102] p-3.5 text-sm text-[#f7f8f8]'
+          : 'hidden border-r border-[#23252a] bg-[#010102] p-3.5 text-sm text-[#f7f8f8] lg:sticky lg:top-0 lg:flex lg:h-screen lg:w-[240px] lg:shrink-0 lg:flex-col'
+      }
+    >
       <div className="flex shrink-0 items-center gap-2.5 px-2 py-1">
         <div className="flex h-10 w-10 items-center justify-center rounded-lg border border-[#5e6ad2] bg-[#5e6ad2] text-sm font-semibold text-white">
           LBL
@@ -92,7 +103,7 @@ export default function Sidebar({ active, onSelect, currentUser, allowedPages, o
         <p className="mt-1 text-xs capitalize text-[#8a8f98]">{currentUser.role} workspace</p>
       </div>
 
-      <nav className="mt-3 max-h-[320px] min-h-0 flex-1 space-y-2 overflow-y-auto pr-1 md:max-h-none">
+      <nav className="mt-3 min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
         {sections.map((section, sectionIndex) => {
           const sectionItems = visibleItems.filter((item) => item.section === section);
           if (!sectionItems.length) return null;
@@ -110,7 +121,7 @@ export default function Sidebar({ active, onSelect, currentUser, allowedPages, o
                   return (
                     <button
                       key={item.id}
-                      onClick={() => onSelect(item.id)}
+                      onClick={() => handleSelect(item.id)}
                       className={`flex h-[38px] w-full items-center gap-2.5 rounded-lg px-2.5 text-left transition ${
                         isActive
                           ? 'bg-[#5e6ad2] text-white'
@@ -119,7 +130,7 @@ export default function Sidebar({ active, onSelect, currentUser, allowedPages, o
                     >
                       <Icon size={16} strokeWidth={isActive ? 2.2 : 1.8} />
                       <span className="min-w-0 flex-1 truncate text-[13px] font-medium">{item.label}</span>
-                      {item.id === 'follow-up-tasks' && followUpBadge > 0 && (
+                      {item.id === 'sales-crm' && followUpBadge > 0 && (
                         <span className="rounded-full bg-[#EF4444] px-2 py-0.5 text-[10px] font-semibold text-white">{followUpBadge}</span>
                       )}
                     </button>

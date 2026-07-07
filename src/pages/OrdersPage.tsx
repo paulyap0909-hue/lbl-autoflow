@@ -1,19 +1,23 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import type { Order, Product } from '../data/mockData';
+import type { Customer, Order, Product } from '../data/mockData';
 import AddOrderModal from './AddOrderModal';
 import EditOrderModal from './EditOrderModal';
 import InvoiceModal from '../components/InvoiceModal';
 import LuxuryInvoicePreviewModal from '../components/LuxuryInvoicePreviewModal';
 import Toast from '../components/Toast';
+import { getMalaysiaDateTimeInputs } from '../utils/malaysiaDateTime';
+import { isActiveOrder } from '../utils/orderLifecycle';
 import { formatRM } from '../utils/pricing';
 import { generateInvoiceForOrder, loadInvoicesFromSupabase, type InvoiceRecord } from '../services/invoiceService';
+import type { OrderOperationalWorkflowResult } from '../services/orderService';
 
 type OrdersPageProps = {
   orders: Order[];
   products: Product[];
+  customers: Customer[];
   orderSource: 'Supabase' | 'localStorage';
   orderError?: string;
-  onAddOrder: (order: Order) => void | Promise<void>;
+  onAddOrder: (order: Order) => void | OrderOperationalWorkflowResult | Promise<void | OrderOperationalWorkflowResult>;
   onUpdateOrder: (order: Order) => void | Promise<void>;
   onMarkOrderPaid: (orderId: string | number) => void | Promise<void>;
   onDeleteOrder: (order: Order) => void | Promise<void>;
@@ -30,6 +34,7 @@ const badgeClass = (status: string) => {
 };
 
 type PipelineFilter = 'All' | 'Pending Payment' | 'Confirmed' | 'In Kitchen' | 'Ready' | 'Delivery' | 'Completed';
+type OrdersViewMode = 'active' | 'all';
 type OrderWithTimestamps = Order & {
   createdAt?: string;
   created_at?: string;
@@ -40,13 +45,29 @@ type OrderWithRawItems = Order & {
   items?: { name?: string; product?: string; quantity?: number | string; qty?: number | string }[] | string | null;
 };
 
-const getTodayDateString = () => {
-  const now = new Date();
-  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+const getTodayDateString = () => getMalaysiaDateTimeInputs().date;
+
+const getTomorrowDateString = (today: string) => {
+  const [year, month, day] = today.split('-').map(Number);
+  const tomorrow = new Date(Date.UTC(year, month - 1, day + 1));
+  return tomorrow.toISOString().slice(0, 10);
 };
 
-const isCompletedOrder = (order: Order) =>
-  order.paymentStatus === 'Paid' && order.kitchenStatus === 'Ready' && order.deliveryStatus === 'Delivered';
+const normalizeStatusValue = (value: unknown) => String(value ?? '').trim().toLowerCase();
+
+export const isOrderCompleted = (order: Order) => {
+  const completedValues = new Set(['completed', 'complete']);
+  const workflowStatus = normalizeStatusValue(order.workflowStatus);
+  const deliveryStatus = normalizeStatusValue(order.deliveryStatus);
+
+  return completedValues.has(workflowStatus)
+    || completedValues.has(deliveryStatus)
+    || deliveryStatus === 'delivered'
+    || deliveryStatus === 'collected';
+};
+
+const isTerminalOrder = (order: Order) =>
+  isOrderCompleted(order) || ['cancelled', 'canceled'].includes(normalizeStatusValue(order.workflowStatus));
 
 const getDeliverySortValue = (order: Order) => {
   if (!order.deliveryDate || !order.deliveryTime) return Number.POSITIVE_INFINITY;
@@ -61,7 +82,7 @@ const getCreatedSortValue = (order: OrderWithTimestamps) => {
 };
 
 const priorityBadgesForOrder = (order: Order, today: string) => {
-  if (order.deliveryStatus === 'Delivered') return ['Completed'];
+  if (isOrderCompleted(order)) return ['Completed'];
 
   const badges: string[] = [];
   if (order.deliveryDate === today) badges.push('Today');
@@ -80,7 +101,7 @@ const priorityBadgeClass = (label: string) => {
 const pipelineFilters: PipelineFilter[] = ['All', 'Pending Payment', 'Confirmed', 'In Kitchen', 'Ready', 'Delivery', 'Completed'];
 
 const getPipelineStatus = (order: Order): PipelineFilter => {
-  if (isCompletedOrder(order) || order.workflowStatus === 'Completed') return 'Completed';
+  if (isOrderCompleted(order)) return 'Completed';
   if (order.deliveryStatus === 'Assigned' || order.deliveryStatus === 'Out for Delivery' || order.workflowStatus === 'Out For Delivery') return 'Delivery';
   if (order.kitchenStatus === 'Ready' || order.workflowStatus === 'Ready') return 'Ready';
   if (order.kitchenStatus === 'Preparing' || order.workflowStatus === 'Preparing') return 'In Kitchen';
@@ -93,7 +114,7 @@ const matchesPipelineFilter = (order: Order, filter: PipelineFilter) =>
 
 const getOrderNo = (order: Order) => order.orderNo || order.id;
 
-export default function OrdersPage({ orders, products, orderSource, orderError = '', onAddOrder, onUpdateOrder, onMarkOrderPaid, onDeleteOrder }: OrdersPageProps) {
+export default function OrdersPage({ orders, products, customers, orderSource, orderError = '', onAddOrder, onUpdateOrder, onMarkOrderPaid, onDeleteOrder }: OrdersPageProps) {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
   const [invoiceOrderId, setInvoiceOrderId] = useState<string | null>(null);
@@ -105,7 +126,9 @@ export default function OrdersPage({ orders, products, orderSource, orderError =
   const [searchTerm, setSearchTerm] = useState('');
   const [productFilter, setProductFilter] = useState('All');
   const [pipelineFilter, setPipelineFilter] = useState<PipelineFilter>('All');
+  const [viewMode, setViewMode] = useState<OrdersViewMode>('active');
   const [completedOpen, setCompletedOpen] = useState(false);
+  const [moreActionsOrderId, setMoreActionsOrderId] = useState<string | null>(null);
 
   const workflowStages = ['New Order', 'Pending Payment', 'Paid', 'Preparing', 'Ready', 'Out For Delivery', 'Completed', 'Cancelled'] as const;
 
@@ -153,31 +176,29 @@ export default function OrdersPage({ orders, products, orderSource, orderError =
   };
 
   const todayDate = useMemo(() => getTodayDateString(), []);
+  const tomorrowDate = useMemo(() => getTomorrowDateString(todayDate), [todayDate]);
+  const activeOrders = useMemo(() => orders.filter(isActiveOrder), [orders]);
 
-  const baseFilteredOrders = useMemo(() => {
-    return orders.filter((order) => {
-      const matchesSearch = [order.id, order.orderNo, order.customerName, order.phone, order.product, order.address]
-        .join(' ').toLowerCase()
-        .includes(searchTerm.toLowerCase());
-      const matchesProduct = productFilter === 'All' || order.product === productFilter;
-      const matchesPipeline = matchesPipelineFilter(order, pipelineFilter);
-      return matchesSearch && matchesProduct && matchesPipeline;
-    });
-  }, [orders, searchTerm, productFilter, pipelineFilter]);
-
-  const pipelineCounts = useMemo(() => {
-    const searchAndProductFiltered = orders.filter((order) => {
+  const searchAndProductFilteredOrders = useMemo(() => {
+    return activeOrders.filter((order) => {
       const matchesSearch = [order.id, order.orderNo, order.customerName, order.phone, order.product, order.address]
         .join(' ').toLowerCase()
         .includes(searchTerm.toLowerCase());
       const matchesProduct = productFilter === 'All' || order.product === productFilter;
       return matchesSearch && matchesProduct;
     });
+  }, [activeOrders, searchTerm, productFilter]);
 
+  const baseFilteredOrders = useMemo(
+    () => searchAndProductFilteredOrders.filter((order) => matchesPipelineFilter(order, pipelineFilter)),
+    [searchAndProductFilteredOrders, pipelineFilter]
+  );
+
+  const pipelineCounts = useMemo(() => {
     return pipelineFilters.reduce<Record<PipelineFilter, number>>((counts, filter) => {
       counts[filter] = filter === 'All'
-        ? searchAndProductFiltered.length
-        : searchAndProductFiltered.filter((order) => getPipelineStatus(order) === filter).length;
+        ? searchAndProductFilteredOrders.length
+        : searchAndProductFilteredOrders.filter((order) => getPipelineStatus(order) === filter).length;
       return counts;
     }, {
       All: 0,
@@ -188,14 +209,42 @@ export default function OrdersPage({ orders, products, orderSource, orderError =
       Delivery: 0,
       Completed: 0
     });
-  }, [orders, searchTerm, productFilter]);
+  }, [searchAndProductFilteredOrders]);
 
   const filteredOrders = useMemo(() => {
-    return baseFilteredOrders
+    return [...baseFilteredOrders]
+      .sort((first, second) => {
+        const dateComparison = String(second.deliveryDate || '').localeCompare(String(first.deliveryDate || ''));
+        if (dateComparison !== 0) return dateComparison;
+        const timeComparison = String(second.deliveryTime || '').localeCompare(String(first.deliveryTime || ''));
+        if (timeComparison !== 0) return timeComparison;
+        return getCreatedSortValue(second as OrderWithTimestamps) - getCreatedSortValue(first as OrderWithTimestamps);
+      });
+  }, [baseFilteredOrders]);
+
+  const orderStats = useMemo(() => {
+    const operationalOrders = activeOrders.filter((order) => !isTerminalOrder(order));
+    const todayOrders = operationalOrders.filter((order) => order.deliveryDate === todayDate);
+    const upcomingOrders = operationalOrders.filter((order) => order.deliveryDate > todayDate);
+    const overdueOrders = operationalOrders.filter((order) => Boolean(order.deliveryDate) && order.deliveryDate < todayDate);
+
+    return {
+      todayOrders: todayOrders.length,
+      todayRevenue: todayOrders.reduce((sum, order) => sum + (Number(order.totalAmount) || 0), 0),
+      needPayment: operationalOrders.filter((order) => order.paymentStatus !== 'Paid').length,
+      needKitchen: operationalOrders.filter((order) => order.kitchenStatus !== 'Ready' && order.kitchenStatus !== 'Completed').length,
+      needDelivery: operationalOrders.filter((order) => order.kitchenStatus === 'Ready' && order.deliveryStatus !== 'Delivered').length,
+      overdueOrders: overdueOrders.length,
+      upcomingOrders: upcomingOrders.length,
+    };
+  }, [activeOrders, todayDate]);
+
+  const activeDisplayOrders = useMemo(() => {
+    return searchAndProductFilteredOrders
+      .filter((order) => !isTerminalOrder(order))
       .sort((first, second) => {
         const firstDelivery = getDeliverySortValue(first);
         const secondDelivery = getDeliverySortValue(second);
-
         if (firstDelivery !== secondDelivery) {
           if (!Number.isFinite(firstDelivery)) return 1;
           if (!Number.isFinite(secondDelivery)) return -1;
@@ -203,36 +252,24 @@ export default function OrdersPage({ orders, products, orderSource, orderError =
         }
         return getCreatedSortValue(second as OrderWithTimestamps) - getCreatedSortValue(first as OrderWithTimestamps);
       });
-  }, [baseFilteredOrders]);
+  }, [searchAndProductFilteredOrders]);
 
-  const orderStats = useMemo(() => {
-    const totalSales = orders.reduce((sum, order) => sum + (Number(order.totalAmount) || 0), 0);
-    const pendingPayment = orders.filter((order) => order.paymentStatus !== 'Paid').length;
-    const inKitchen = orders.filter((order) => order.kitchenStatus === 'Preparing' || order.workflowStatus === 'Preparing').length;
-    const ready = orders.filter((order) => order.kitchenStatus === 'Ready' && order.deliveryStatus !== 'Delivered').length;
-    const deliveryPending = orders.filter((order) => order.deliveryStatus !== 'Delivered').length;
-    const completedOrders = orders.filter(isCompletedOrder).length;
-    const todayOrders = orders.filter((order) => order.deliveryDate === todayDate || getCreatedSortValue(order as OrderWithTimestamps) >= new Date(`${todayDate}T00:00:00`).getTime()).length;
-
-    return {
-      totalSales,
-      pendingPayment,
-      inKitchen,
-      ready,
-      deliveryPending,
-      completedOrders,
-      todayOrders,
-    };
-  }, [orders, todayDate]);
-
-  const activeDisplayOrders = useMemo(
-    () => filteredOrders.filter((order) => !isCompletedOrder(order) && order.workflowStatus !== 'Completed'),
-    [filteredOrders]
-  );
+  const activeOrderGroups = useMemo(() => ({
+    overdue: activeDisplayOrders.filter((order) => Boolean(order.deliveryDate) && order.deliveryDate < todayDate),
+    today: activeDisplayOrders.filter((order) => order.deliveryDate === todayDate),
+    tomorrow: activeDisplayOrders.filter((order) => order.deliveryDate === tomorrowDate),
+    upcoming: activeDisplayOrders.filter((order) => order.deliveryDate > tomorrowDate),
+    unscheduled: activeDisplayOrders.filter((order) => !order.deliveryDate),
+  }), [activeDisplayOrders, todayDate, tomorrowDate]);
 
   const completedDisplayOrders = useMemo(
-    () => filteredOrders.filter((order) => isCompletedOrder(order) || order.workflowStatus === 'Completed'),
-    [filteredOrders]
+    () => searchAndProductFilteredOrders
+      .filter(isOrderCompleted)
+      .sort((first, second) => {
+        const dateComparison = String(second.deliveryDate || '').localeCompare(String(first.deliveryDate || ''));
+        return dateComparison || getCreatedSortValue(second as OrderWithTimestamps) - getCreatedSortValue(first as OrderWithTimestamps);
+      }),
+    [searchAndProductFilteredOrders]
   );
 
   const handleMarkPaid = async (orderId: string) => {
@@ -298,7 +335,7 @@ export default function OrdersPage({ orders, products, orderSource, orderError =
         updatedOrder.deliveryStatus = 'Delivered';
       }
 
-      onUpdateOrder(updatedOrder);
+      await onUpdateOrder(updatedOrder);
   };
 
   const cancelWorkflow = (orderId: string) => {
@@ -311,9 +348,16 @@ export default function OrdersPage({ orders, products, orderSource, orderError =
     });
   };
 
-  const handleDeleteOrder = (order: Order) => {
+  const handleDeleteOrder = async (order: Order) => {
     if (!window.confirm(`Delete order ${order.id}?`)) return;
-    onDeleteOrder(order);
+    try {
+      await onDeleteOrder(order);
+      await reloadInvoices();
+      setToast({ message: `${getOrderNo(order)} deleted successfully.`, type: 'success' });
+    } catch (error) {
+      console.error('Delete order error:', error);
+      setToast({ message: 'Failed to delete order.', type: 'error' });
+    }
   };
 
   const handleSaveEditedOrder = async (updatedOrder: Order) => {
@@ -444,6 +488,7 @@ export default function OrdersPage({ orders, products, orderSource, orderError =
     const invoiceGenerated = Boolean(invoice);
     const invoiceBusy = invoiceLoadingOrderId === order.id;
     const pipelineStatus = getPipelineStatus(order);
+    const moreActionsOpen = moreActionsOrderId === order.id;
 
     return (
       <article
@@ -499,12 +544,25 @@ export default function OrdersPage({ orders, products, orderSource, orderError =
           )}
           <button onClick={() => setSelectedOrderId(order.id)} className="rounded-xl bg-white/5 px-3 py-2 text-xs font-semibold text-slate-200 transition hover:bg-white/10">Workflow</button>
           <button onClick={() => handleSendInvoiceWhatsApp(order, invoice)} className="rounded-xl bg-emerald-500/10 px-3 py-2 text-xs font-semibold text-emerald-200 transition hover:bg-emerald-500/20">WhatsApp</button>
-          <button onClick={() => setEditingOrderId(order.id)} className="rounded-xl bg-white/5 px-3 py-2 text-xs font-semibold text-slate-200 transition hover:bg-white/10">Edit</button>
-          <button onClick={() => handleMarkPaid(order.id)} className="rounded-xl bg-emerald-500/10 px-3 py-2 text-xs font-semibold text-emerald-200 transition hover:bg-emerald-500/20">Mark Paid</button>
-          <button onClick={() => handleSendKitchen(order.id)} className="rounded-xl bg-sky-500/10 px-3 py-2 text-xs font-semibold text-sky-200 transition hover:bg-sky-500/20">Send Kitchen</button>
-          <button onClick={() => handleAssignDriver(order.id)} className="rounded-xl bg-indigo-500/10 px-3 py-2 text-xs font-semibold text-indigo-200 transition hover:bg-indigo-500/20">Assign Driver</button>
-          <button onClick={() => handleDeleteOrder(order)} className="rounded-xl bg-rose-500/10 px-3 py-2 text-xs font-semibold text-rose-200 transition hover:bg-rose-500/20">Delete</button>
+          <button
+            type="button"
+            onClick={() => setMoreActionsOrderId((current) => current === order.id ? null : order.id)}
+            className="rounded-xl border border-[#334155] bg-[#0F172A] px-3 py-2 text-xs font-semibold text-slate-300 transition hover:border-[#C8A96B]/40 hover:text-white"
+            aria-expanded={moreActionsOpen}
+          >
+            {moreActionsOpen ? 'Hide Actions' : 'More Actions'}
+          </button>
         </div>
+
+        {moreActionsOpen && (
+          <div className="mt-2 grid grid-cols-2 gap-2 rounded-[14px] border border-[#334155] bg-[#0F172A] p-2 sm:grid-cols-5">
+            <button onClick={() => handleMarkPaid(order.id)} disabled={order.paymentStatus === 'Paid'} className="rounded-xl bg-emerald-500/10 px-3 py-2 text-xs font-semibold text-emerald-200 transition hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-50">Mark Paid</button>
+            <button onClick={() => handleSendKitchen(order.id)} className="rounded-xl bg-sky-500/10 px-3 py-2 text-xs font-semibold text-sky-200 transition hover:bg-sky-500/20">Send Kitchen</button>
+            <button onClick={() => handleAssignDriver(order.id)} className="rounded-xl bg-indigo-500/10 px-3 py-2 text-xs font-semibold text-indigo-200 transition hover:bg-indigo-500/20">Assign Driver</button>
+            <button onClick={() => setEditingOrderId(order.id)} className="rounded-xl bg-white/5 px-3 py-2 text-xs font-semibold text-slate-200 transition hover:bg-white/10">Edit</button>
+            <button onClick={() => handleDeleteOrder(order)} className="rounded-xl bg-rose-500/10 px-3 py-2 text-xs font-semibold text-rose-200 transition hover:bg-rose-500/20">Delete</button>
+          </div>
+        )}
       </article>
     );
   };
@@ -557,7 +615,30 @@ Thank you 😊`;
             <h3 className="mt-1.5 text-2xl font-semibold text-white">Orders Command Center</h3>
             <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-400">Manage daily bakery orders, payment, kitchen and delivery flow.</p>
           </div>
-          <div className="flex flex-wrap items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex rounded-xl border border-[#334155] bg-[#0F172A] p-1">
+              <button
+                type="button"
+                onClick={() => {
+                  setViewMode('active');
+                  setPipelineFilter('All');
+                }}
+                className={`rounded-lg px-3 py-2 text-xs font-semibold transition ${
+                  viewMode === 'active' ? 'bg-[#C8A96B] text-[#111111]' : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                Active Orders
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode('all')}
+                className={`rounded-lg px-3 py-2 text-xs font-semibold transition ${
+                  viewMode === 'all' ? 'bg-[#C8A96B] text-[#111111]' : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                View All Orders
+              </button>
+            </div>
             <button onClick={() => setIsModalOpen(true)} className="rounded-xl bg-[#C8A96B] px-4 py-2.5 text-sm font-semibold text-[#111111] transition hover:bg-[#d6b77d]">
               Add New Order
             </button>
@@ -573,35 +654,20 @@ Thank you 😊`;
         </section>
       )}
 
-      <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+      <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 2xl:grid-cols-7">
         {[
-          ['Pending Payment', orderStats.pendingPayment, 'Collect receipts and confirm payment.'],
-          ['Kitchen Pending', orders.filter((order) => order.kitchenStatus !== 'Ready' && !isCompletedOrder(order)).length, 'Send paid orders into production.'],
-          ['Ready / Delivery', orderStats.ready, 'Handover, assign or deliver ready orders.'],
-          ['Today Orders', orderStats.todayOrders, 'Focus on orders due or created today.'],
-        ].map(([label, value, note]) => (
-          <div key={label} className="rounded-[16px] border border-[#334155] bg-[#111111] p-3.5 shadow-panel">
-            <div className="flex items-start justify-between gap-3">
-              <p className="text-xs uppercase tracking-[0.16em] text-slate-500">{label}</p>
-              <span className="rounded-full bg-[#C8A96B]/15 px-3 py-1 text-sm font-semibold text-[#E4C98E]">{value}</span>
-            </div>
-            <p className="mt-3 text-sm leading-5 text-slate-400">{note}</p>
-          </div>
-        ))}
-      </section>
-
-      <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
-        {[
-          ['Pending Payment', orderStats.pendingPayment, 'text-amber-200'],
-          ['In Kitchen', orderStats.inKitchen, 'text-sky-200'],
-          ['Ready For Delivery / Collection', orderStats.ready, 'text-emerald-200'],
-          ['Delivery Pending', orderStats.deliveryPending, 'text-indigo-200'],
-          ['Completed Orders', orderStats.completedOrders, 'text-emerald-200'],
-          ['Total Sales', formatRM(orderStats.totalSales), 'text-[#E4C98E]'],
-        ].map(([label, value, valueClass]) => (
+          ['Today Orders', orderStats.todayOrders, 'Due today', 'text-white'],
+          ['Today Revenue', formatRM(orderStats.todayRevenue), 'Today order value', 'text-[#E4C98E]'],
+          ['Need Payment', orderStats.needPayment, 'Payment follow-up', 'text-amber-200'],
+          ['Need Kitchen', orderStats.needKitchen, 'Production not ready', 'text-sky-200'],
+          ['Need Delivery', orderStats.needDelivery, 'Ready for handover', 'text-emerald-200'],
+          ['Overdue Orders', orderStats.overdueOrders, 'Past due and open', 'text-rose-200'],
+          ['Upcoming Orders', orderStats.upcomingOrders, 'Due after today', 'text-indigo-200'],
+        ].map(([label, value, note, valueClass]) => (
           <div key={label} className="rounded-[16px] border border-[#334155] bg-[#111111] p-3.5 shadow-panel transition hover:border-[#C8A96B]/40">
             <p className="text-[11px] uppercase tracking-[0.16em] text-slate-500">{label}</p>
-            <p className={`mt-3 text-2xl font-semibold ${valueClass}`}>{value}</p>
+            <p className={`mt-2 text-2xl font-semibold ${valueClass}`}>{value}</p>
+            <p className="mt-1 text-xs text-slate-500">{note}</p>
           </div>
         ))}
       </section>
@@ -632,71 +698,139 @@ Thank you 😊`;
         </div>
       </section>
 
-      <section className="rounded-[18px] border border-[#334155] bg-[#111111] p-2.5 shadow-panel">
-        <div className="flex flex-wrap gap-2">
-        {pipelineFilters.map((filter) => (
-          <button
-            key={filter}
-            type="button"
-            onClick={() => {
-              setPipelineFilter(filter);
-              if (filter === 'Completed') setCompletedOpen(true);
-            }}
-            className={`rounded-xl border px-4 py-2 text-xs font-semibold transition ${
-              pipelineFilter === filter
-                ? 'border-[#C8A96B]/70 bg-[#C8A96B] text-[#111111]'
-                : 'border-[#334155] bg-[#0F172A] text-slate-300 hover:border-[#C8A96B]/40 hover:text-white'
-            }`}
-          >
-            {filter} <span className={pipelineFilter === filter ? 'text-[#111111]/70' : 'text-[#C8A96B]'}>{pipelineCounts[filter]}</span>
-          </button>
-        ))}
-        </div>
-      </section>
-
-      <section className="grid grid-cols-1 gap-3 lg:grid-cols-2 2xl:grid-cols-3">
-        {activeDisplayOrders.map((order) => renderOrderCard(order))}
-
-        {activeDisplayOrders.length === 0 && (
-          <div className="rounded-[18px] border border-dashed border-[#334155] bg-[#111111] p-7 text-center text-sm text-slate-400 lg:col-span-2 2xl:col-span-3">
-            <p className="text-xs uppercase tracking-[0.2em] text-[#C8A96B]">No Active Orders</p>
-            <h4 className="mt-3 text-xl font-semibold text-white">No orders match this view.</h4>
-            <p className="mt-2">Adjust the search or pipeline filter to see more orders.</p>
+      {viewMode === 'all' && (
+        <section className="rounded-[18px] border border-[#334155] bg-[#111111] p-2.5 shadow-panel">
+          <div className="flex flex-wrap gap-2">
+            {pipelineFilters.map((filter) => (
+              <button
+                key={filter}
+                type="button"
+                onClick={() => setPipelineFilter(filter)}
+                className={`rounded-xl border px-4 py-2 text-xs font-semibold transition ${
+                  pipelineFilter === filter
+                    ? 'border-[#C8A96B]/70 bg-[#C8A96B] text-[#111111]'
+                    : 'border-[#334155] bg-[#0F172A] text-slate-300 hover:border-[#C8A96B]/40 hover:text-white'
+                }`}
+              >
+                {filter} <span className={pipelineFilter === filter ? 'text-[#111111]/70' : 'text-[#C8A96B]'}>{pipelineCounts[filter]}</span>
+              </button>
+            ))}
           </div>
-        )}
-      </section>
+        </section>
+      )}
 
-      <section className="overflow-hidden rounded-[18px] border border-[#334155] bg-[#111111] shadow-panel">
-        <button
-          type="button"
-          onClick={() => setCompletedOpen((current) => !current)}
-          className="flex w-full items-center justify-between gap-4 px-4 py-3 text-left transition hover:bg-white/[0.03]"
-          aria-expanded={completedOpen}
-        >
-          <div>
-            <p className="font-semibold text-white">Completed Orders ({completedDisplayOrders.length})</p>
-            <p className="mt-1 text-xs text-slate-500">Completed orders are collapsed so active work stays clear.</p>
-          </div>
-          <span className="rounded-full border border-[#10B981]/30 bg-[#10B981]/10 px-3 py-1 text-xs font-semibold text-[#6EE7B7]">
-            {completedOpen ? 'Collapse' : 'Expand'}
-          </span>
-        </button>
-        {completedOpen && (
-          <div className="grid gap-3 border-t border-[#334155] p-3.5 lg:grid-cols-2 2xl:grid-cols-3">
-            {completedDisplayOrders.length > 0 ? completedDisplayOrders.map((order) => renderOrderCard(order, true)) : (
-              <div className="rounded-[18px] border border-dashed border-[#334155] bg-[#0F172A] p-8 text-center text-sm text-slate-500 lg:col-span-2 2xl:col-span-3">
-                No completed orders in this view.
+      {viewMode === 'active' ? (
+        <>
+          {[
+            {
+              key: 'overdue',
+              title: 'Overdue Orders',
+              note: 'Past delivery date and still requires action.',
+              orders: activeOrderGroups.overdue,
+              empty: 'No overdue orders.',
+              accent: 'text-rose-300',
+            },
+            {
+              key: 'today',
+              title: "Today's Orders",
+              note: 'Orders that must be handled today.',
+              orders: activeOrderGroups.today,
+              empty: 'No active orders for today.',
+              accent: 'text-[#E4C98E]',
+            },
+            {
+              key: 'tomorrow',
+              title: 'Tomorrow',
+              note: 'Prepare payment, kitchen and delivery handoff early.',
+              orders: activeOrderGroups.tomorrow,
+              empty: 'No orders scheduled for tomorrow.',
+              accent: 'text-sky-300',
+            },
+            {
+              key: 'upcoming',
+              title: 'Upcoming Orders',
+              note: 'Future orders after tomorrow.',
+              orders: activeOrderGroups.upcoming,
+              empty: 'No upcoming orders.',
+              accent: 'text-indigo-300',
+            },
+            ...(activeOrderGroups.unscheduled.length > 0 ? [{
+              key: 'unscheduled',
+              title: 'Needs Scheduling',
+              note: 'Open orders missing a delivery date.',
+              orders: activeOrderGroups.unscheduled,
+              empty: '',
+              accent: 'text-amber-300',
+            }] : []),
+          ].map((group) => (
+            <section key={group.key} className="space-y-3">
+              <div className="flex items-end justify-between gap-3 border-b border-[#334155] pb-2">
+                <div>
+                  <h4 className={`text-lg font-semibold ${group.accent}`}>{group.title}</h4>
+                  <p className="mt-1 text-xs text-slate-500">{group.note}</p>
+                </div>
+                <span className="rounded-full border border-[#334155] bg-[#111111] px-3 py-1 text-xs font-semibold text-slate-300">
+                  {group.orders.length}
+                </span>
+              </div>
+              {group.orders.length > 0 ? (
+                <div className="grid grid-cols-1 gap-3 lg:grid-cols-2 2xl:grid-cols-3">
+                  {group.orders.map((order) => renderOrderCard(order))}
+                </div>
+              ) : (
+                <div className="rounded-[16px] border border-dashed border-[#334155] bg-[#111111] px-5 py-6 text-center text-sm text-slate-500">
+                  {group.empty}
+                </div>
+              )}
+            </section>
+          ))}
+
+          <section className="overflow-hidden rounded-[18px] border border-[#334155] bg-[#111111] shadow-panel">
+            <button
+              type="button"
+              onClick={() => setCompletedOpen((current) => !current)}
+              className="flex w-full items-center justify-between gap-4 px-4 py-3 text-left transition hover:bg-white/[0.03]"
+              aria-expanded={completedOpen}
+            >
+              <div>
+                <p className="font-semibold text-white">Completed Orders ({completedDisplayOrders.length})</p>
+                <p className="mt-1 text-xs text-slate-500">Recent completed orders stay hidden until needed.</p>
+              </div>
+              <span className="rounded-full border border-[#10B981]/30 bg-[#10B981]/10 px-3 py-1 text-xs font-semibold text-[#6EE7B7]">
+                {completedOpen ? 'Collapse' : 'Expand'}
+              </span>
+            </button>
+            {completedOpen && (
+              <div className="grid gap-3 border-t border-[#334155] p-3.5 lg:grid-cols-2 2xl:grid-cols-3">
+                {completedDisplayOrders.length > 0 ? completedDisplayOrders.slice(0, 12).map((order) => renderOrderCard(order, true)) : (
+                  <div className="rounded-[18px] border border-dashed border-[#334155] bg-[#0F172A] p-8 text-center text-sm text-slate-500 lg:col-span-2 2xl:col-span-3">
+                    No completed orders.
+                  </div>
+                )}
               </div>
             )}
-          </div>
-        )}
-      </section>
+          </section>
+        </>
+      ) : (
+        <section className="grid grid-cols-1 gap-3 lg:grid-cols-2 2xl:grid-cols-3">
+          {filteredOrders.map((order) => renderOrderCard(order))}
+          {filteredOrders.length === 0 && (
+            <div className="rounded-[18px] border border-dashed border-[#334155] bg-[#111111] p-7 text-center text-sm text-slate-400 lg:col-span-2 2xl:col-span-3">
+              <p className="text-xs uppercase tracking-[0.2em] text-[#C8A96B]">No Orders Found</p>
+              <h4 className="mt-3 text-xl font-semibold text-white">No orders match this history view.</h4>
+              <p className="mt-2">Adjust the search, product or pipeline filter.</p>
+            </div>
+          )}
+        </section>
+      )}
 
       <AddOrderModal
         isOpen={isModalOpen}
         onClose={() => setIsModalOpen(false)}
         onAddOrder={onAddOrder}
         products={products}
+        customers={customers}
+        existingOrders={orders}
       />
       {editingOrderId && orders.find((order) => order.id === editingOrderId) && (
         <EditOrderModal

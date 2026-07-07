@@ -21,6 +21,7 @@ import {
   createLeadActivityInSupabase,
   loadLeadActivitiesFromSupabase,
   loadSalesLeadsFromSupabase,
+  recordSalesLeadWhatsAppContact,
   updateSalesLeadInSupabase,
   type LeadActivity,
   type SalesLead,
@@ -30,6 +31,14 @@ import {
 } from '../services/salesLeadService';
 import { loadQuotationsFromSupabase, type Quotation } from '../services/quotationService';
 import type { Order } from '../data/mockData';
+import {
+  buildCorporateWhatsAppUrl,
+  normalizeMalaysiaMobile
+} from '../utils/corporateWhatsApp';
+import {
+  buildLeadFirstContactMessage,
+  buildLeadFollowUpReplyMessage
+} from '../config/leadMessageTemplates';
 import { formatRM, toSafeNumber } from '../utils/pricing';
 
 type PipelineStage =
@@ -86,12 +95,6 @@ const LEAD_TYPES: SalesLeadType[] = [
   'Other'
 ];
 
-const CORPORATE_WHATSAPP_MESSAGE = `Hi, this is Selina from Layer By Layer Bakery ☺️
-
-May I know who is the right person to contact regarding office tea breaks, staff gatherings, corporate gifting or event dessert arrangements?
-
-We prepare premium mini tarts for company events, meetings and celebrations.`;
-
 const localDateKey = (date: Date) => {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, '0');
@@ -138,14 +141,6 @@ const latestDate = (values: Array<string | undefined>) =>
 
 const normalizeText = (value: unknown) =>
   String(value || '').trim().toLowerCase().replace(/[^a-z0-9]/g, '');
-
-const normalizeMalaysiaPhone = (phone: string) => {
-  const digits = String(phone || '').replace(/\D/g, '');
-  if (!digits) return '';
-  if (digits.startsWith('60')) return digits;
-  if (digits.startsWith('0')) return `6${digits}`;
-  return digits;
-};
 
 const getCurrentUserLabel = () => {
   try {
@@ -202,8 +197,8 @@ const getOrderDate = (order: Order) =>
   order.statusHistory?.[order.statusHistory.length - 1]?.timestamp || order.deliveryDate || '';
 
 const orderMatchesLead = (order: Order, lead: SalesLead) => {
-  const orderPhone = normalizeMalaysiaPhone(order.phone);
-  const leadPhone = normalizeMalaysiaPhone(lead.phone);
+  const orderPhone = normalizeMalaysiaMobile(order.phone);
+  const leadPhone = normalizeMalaysiaMobile(lead.phone);
   if (orderPhone && leadPhone) return orderPhone === leadPhone;
   return Boolean(normalizeText(order.customerName)) &&
     normalizeText(order.customerName) === normalizeText(lead.companyName);
@@ -268,15 +263,17 @@ function LeadCard({
   lead,
   busy,
   onWhatsApp,
+  onSuggestedReply,
   onMove
 }: {
   lead: SalesLead;
   busy: boolean;
   onWhatsApp: (lead: SalesLead) => void;
+  onSuggestedReply: (lead: SalesLead) => void;
   onMove: (lead: SalesLead, stage: PipelineStage) => void;
 }) {
   const stage = stageFromStatus(lead.status) || 'New Lead';
-  const phone = normalizeMalaysiaPhone(lead.phone);
+  const phone = normalizeMalaysiaMobile(lead.phone);
 
   const actionButton = (
     label: string,
@@ -352,6 +349,16 @@ function LeadCard({
         >
           WhatsApp
         </button>
+        {['Contacted', 'Interested'].includes(lead.status) && (
+          <button
+            type="button"
+            disabled={!phone || busy}
+            onClick={() => onSuggestedReply(lead)}
+            className="col-span-2 min-h-8 rounded-lg border border-sky-400/25 bg-sky-400/10 px-2 text-[10px] font-semibold text-sky-200 disabled:opacity-35"
+          >
+            Use Follow-up Reply Template
+          </button>
+        )}
         {actionButton('Mark Contacted', 'Contacted')}
         {actionButton('Mark Interested', 'Interested')}
         {actionButton('Send Quotation', 'Quotation Sent', 'border-[#C8A96B]/30 bg-[#C8A96B]/10 text-[#E4C98E] hover:bg-[#C8A96B]/20')}
@@ -474,6 +481,16 @@ export default function CorporateSalesDashboardPage({ orders = [] }: { orders?: 
           })
       })),
     [filteredLeads]
+  );
+
+  const contactedTodayLeads = useMemo(
+    () => analytics.visibleLeads
+      .filter((lead) =>
+        lead.lastContactDate === todayKey() &&
+        !['Won', 'Lost', 'Archived'].includes(lead.status)
+      )
+      .sort((a, b) => a.companyName.localeCompare(b.companyName)),
+    [analytics.visibleLeads]
   );
 
   const corporateFollowUps = useMemo(() => {
@@ -691,28 +708,33 @@ export default function CorporateSalesDashboardPage({ orders = [] }: { orders?: 
   };
 
   const openWhatsApp = async (lead: SalesLead) => {
-    const phone = normalizeMalaysiaPhone(lead.phone);
-    if (!phone) {
-      setToast({ message: 'Phone number missing.', type: 'error' });
+    const whatsappUrl = buildCorporateWhatsAppUrl(
+      lead.phone,
+      buildLeadFirstContactMessage(lead.companyName)
+    );
+    if (!whatsappUrl) {
+      setToast({ message: 'Valid Malaysian mobile number missing.', type: 'error' });
       return;
     }
 
     window.open(
-      `https://wa.me/${phone}?text=${encodeURIComponent(CORPORATE_WHATSAPP_MESSAGE)}`,
+      whatsappUrl,
       '_blank',
       'noopener,noreferrer'
     );
 
-    if (!lead.id) return;
+    if (!lead.id || ['Won', 'Lost', 'Archived'].includes(lead.status)) {
+      setToast({ message: 'WhatsApp opened. Lead status was not changed.', type: 'info' });
+      return;
+    }
     setBusyLeadId(lead.id);
     try {
-      await updateSalesLeadInSupabase({
-        ...lead,
-        status: 'Contacted',
-        messagesSent: toSafeNumber(lead.messagesSent) + 1,
-        whatsappReady: true,
-        lastContactDate: todayKey()
-      });
+      const saved = await recordSalesLeadWhatsAppContact(
+        lead,
+        todayKey(),
+        addDays(todayKey(), 3)
+      );
+      setLeads((current) => current.map((item) => item.id === saved.id ? saved : item));
       await createLeadActivityInSupabase({
         leadId: lead.id,
         activityType: 'WhatsApp Sent',
@@ -721,7 +743,7 @@ export default function CorporateSalesDashboardPage({ orders = [] }: { orders?: 
       });
       await reload();
       notifyChanged();
-      setToast({ message: 'WhatsApp opened and lead marked Contacted.', type: 'success' });
+      setToast({ message: 'Lead moved to Contacted Today.', type: 'success' });
     } catch (updateError) {
       console.error('Corporate WhatsApp CRM update error:', updateError);
       setToast({ message: 'WhatsApp opened, but CRM update failed.', type: 'error' });
@@ -731,16 +753,46 @@ export default function CorporateSalesDashboardPage({ orders = [] }: { orders?: 
   };
 
   const openFollowUpWhatsApp = (lead: SalesLead) => {
-    const phone = normalizeMalaysiaPhone(lead.phone);
-    if (!phone) {
-      setToast({ message: 'Phone number missing.', type: 'error' });
+    const useReplyTemplate = ['Contacted', 'Interested'].includes(lead.status);
+    const whatsappUrl = buildCorporateWhatsAppUrl(
+      lead.phone,
+      useReplyTemplate
+        ? buildLeadFollowUpReplyMessage(lead.contactPerson)
+        : buildLeadFirstContactMessage(lead.companyName)
+    );
+    if (!whatsappUrl) {
+      setToast({ message: 'Valid Malaysian mobile number missing.', type: 'error' });
       return;
     }
-    window.open(
-      `https://wa.me/${phone}?text=${encodeURIComponent(CORPORATE_WHATSAPP_MESSAGE)}`,
-      '_blank',
-      'noopener,noreferrer'
-    );
+    window.open(whatsappUrl, '_blank', 'noopener,noreferrer');
+    if (!lead.id || ['Won', 'Lost', 'Archived'].includes(lead.status)) return;
+    const leadId = lead.id;
+
+    void (async () => {
+      setBusyLeadId(leadId);
+      try {
+        const saved = await recordSalesLeadWhatsAppContact(
+          lead,
+          todayKey(),
+          addDays(todayKey(), 3)
+        );
+        setLeads((current) => current.map((item) => item.id === saved.id ? saved : item));
+        await createLeadActivityInSupabase({
+          leadId,
+          activityType: 'WhatsApp Sent',
+          description: 'Corporate follow-up message opened',
+          performedBy: getCurrentUserLabel()
+        });
+        await reload();
+        notifyChanged();
+        setToast({ message: 'Lead moved to Contacted Today.', type: 'success' });
+      } catch (updateError) {
+        console.error('Corporate follow-up WhatsApp update error:', updateError);
+        setToast({ message: 'WhatsApp opened, but lead update failed.', type: 'error' });
+      } finally {
+        setBusyLeadId(null);
+      }
+    })();
   };
 
   const kpis = [
@@ -888,12 +940,12 @@ export default function CorporateSalesDashboardPage({ orders = [] }: { orders?: 
                 </div>
                 <button
                   type="button"
-                  disabled={!normalizeMalaysiaPhone(lead.phone)}
+                  disabled={!normalizeMalaysiaMobile(lead.phone)}
                   onClick={() => openFollowUpWhatsApp(lead)}
                   className="mt-3 flex min-h-8 w-full items-center justify-center gap-1.5 rounded-lg bg-emerald-500/20 text-[10px] font-semibold text-emerald-200 disabled:opacity-35"
                 >
                   <MessageCircle size={12} />
-                  WhatsApp
+                  {['Contacted', 'Interested'].includes(lead.status) ? 'Use Follow-up Reply Template' : 'WhatsApp'}
                 </button>
               </article>
             )})}
@@ -901,6 +953,32 @@ export default function CorporateSalesDashboardPage({ orders = [] }: { orders?: 
         ) : (
           <div className="px-4 py-8 text-center text-sm text-[#64748B]">All corporate leads are up to date.</div>
         )}
+      </section>
+
+      <section className="ds-card rounded-xl border border-[#334155] bg-[#111111] p-4">
+        <div className="flex items-end justify-between gap-3 border-b border-[#334155] pb-3">
+          <div>
+            <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-emerald-300">Outreach Progress</p>
+            <h2 className="mt-1 text-base font-semibold text-white">Contacted Today</h2>
+          </div>
+          <span className="rounded-full bg-emerald-500/10 px-2.5 py-1 text-xs font-semibold text-emerald-200">{contactedTodayLeads.length}</span>
+        </div>
+        <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+          {contactedTodayLeads.map((lead) => (
+            <article key={String(lead.id)} className="rounded-xl border border-[#334155] bg-[#0F172A] p-3">
+              <p className="truncate text-sm font-semibold text-white">{lead.companyName || 'Unnamed company'}</p>
+              <p className="mt-1 text-xs text-[#94A3B8]">{lead.phone || 'No phone'} · {lead.status}</p>
+              <p className="mt-1 text-xs text-[#64748B]">Next follow-up: {lead.nextFollowUpDate || 'Not scheduled'}</p>
+              <div className="mt-3 flex gap-2">
+                <button type="button" disabled={!normalizeMalaysiaMobile(lead.phone)} onClick={() => openFollowUpWhatsApp(lead)} className="min-h-8 flex-1 rounded-lg bg-sky-500/15 px-3 text-xs font-semibold text-sky-100 disabled:opacity-40">Use Follow-up Reply Template</button>
+                <button type="button" onClick={() => setStageFilter(stageFromStatus(lead.status) || 'All')} className="min-h-8 rounded-lg border border-[#334155] bg-white/5 px-3 text-xs font-semibold text-[#CBD5E1]">View Details</button>
+              </div>
+            </article>
+          ))}
+          {contactedTodayLeads.length === 0 && (
+            <p className="rounded-xl border border-dashed border-[#334155] bg-[#0F172A] p-5 text-center text-sm text-[#64748B] md:col-span-2 xl:col-span-3">No leads contacted today yet.</p>
+          )}
+        </div>
       </section>
 
       <section>
@@ -931,6 +1009,7 @@ export default function CorporateSalesDashboardPage({ orders = [] }: { orders?: 
                     lead={lead}
                     busy={String(busyLeadId) === String(lead.id)}
                     onWhatsApp={openWhatsApp}
+                    onSuggestedReply={openFollowUpWhatsApp}
                     onMove={moveLead}
                   />
                 ))}

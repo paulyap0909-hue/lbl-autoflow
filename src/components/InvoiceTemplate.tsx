@@ -8,6 +8,7 @@ type InvoiceTemplateProps = {
   order?: Partial<Order> | Record<string, unknown> | null;
   onMarkPaid?: () => void | Promise<void>;
   previewMode?: 'compact' | 'full';
+  showChrome?: boolean;
 };
 
 const formatCurrency = formatRM;
@@ -26,7 +27,7 @@ const getStatusColor = (status: string) => {
   return 'bg-white/5 text-slate-300 border-white/10';
 };
 
-export default function InvoiceTemplate({ invoice, order, onMarkPaid, previewMode = 'full' }: InvoiceTemplateProps) {
+export default function InvoiceTemplate({ invoice, order, onMarkPaid, previewMode = 'full', showChrome = true }: InvoiceTemplateProps) {
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
   const safeInvoice = (invoice ?? {}) as Record<string, unknown>;
   const safeOrder = (order ?? {}) as Record<string, unknown>;
@@ -41,15 +42,15 @@ export default function InvoiceTemplate({ invoice, order, onMarkPaid, previewMod
       'Pending'
     );
 
-  const orderId = String(
-    safeInvoice.orderId ??
-    safeInvoice.order_id ??
+  const orderRef = String(
     safeInvoice.orderNo ??
     safeInvoice.order_no ??
-    safeOrder.orderId ??
-    safeOrder.order_id ??
     safeOrder.orderNo ??
     safeOrder.order_no ??
+    safeInvoice.orderId ??
+    safeInvoice.order_id ??
+    safeOrder.orderId ??
+    safeOrder.order_id ??
     safeOrder.id ??
     ''
   );
@@ -96,7 +97,7 @@ export default function InvoiceTemplate({ invoice, order, onMarkPaid, previewMod
   const calculatedSubtotal = items.reduce((sum, item) => sum + item.quantity * item.unitPrice, 0);
   const displaySubtotal = finalSubtotal || subtotal || calculatedSubtotal;
   const displayTotal = totalAmount || displaySubtotal + deliveryFee;
-  const hasInvoiceData = Boolean(invoiceNumber || orderId || customerName);
+  const hasInvoiceData = Boolean(invoiceNumber || orderRef || customerName);
 
   const invoiceDate = new Date().toLocaleDateString('en-GB', {
     day: '2-digit',
@@ -129,7 +130,7 @@ export default function InvoiceTemplate({ invoice, order, onMarkPaid, previewMod
   };
 
   const handleCopyLink = () => {
-    const invoiceLink = `${window.location.origin}?invoice=${orderId || invoiceNumber}`;
+    const invoiceLink = `${window.location.origin}?invoice=${orderRef || invoiceNumber}`;
     navigator.clipboard.writeText(invoiceLink);
     setToast({ message: 'Invoice link copied to clipboard!', type: 'success' });
   };
@@ -203,6 +204,7 @@ export default function InvoiceTemplate({ invoice, order, onMarkPaid, previewMod
               <p className="text-xs uppercase tracking-[0.18em] text-softGold">Compact Invoice Preview</p>
               <h3 className="mt-2 truncate text-xl font-semibold text-white">{invoiceNumber || 'Invoice'}</h3>
               <p className="mt-1 truncate text-sm text-slate-400">{customerName || 'Customer'}</p>
+              <p className="mt-1 truncate text-xs text-slate-500">Order Ref: {orderRef || '-'}</p>
             </div>
             <div className="shrink-0 rounded-[18px] border border-[#C8A96B]/30 bg-[#C8A96B]/10 px-4 py-3 text-left md:text-right">
               <p className="text-[11px] uppercase tracking-[0.16em] text-[#E4C98E]">Amount</p>
@@ -244,7 +246,7 @@ export default function InvoiceTemplate({ invoice, order, onMarkPaid, previewMod
       )}
 
       {/* Sticky Action Toolbar */}
-      <div className="sticky top-0 z-40 mb-4 rounded-[20px] border border-[#334155] bg-[#111111]/95 p-4 backdrop-blur-sm shadow-panel">
+      {showChrome && <div className="sticky top-0 z-40 mb-4 rounded-[20px] border border-[#334155] bg-[#111111]/95 p-4 backdrop-blur-sm shadow-panel">
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div>
             <p className="text-xs uppercase tracking-[0.2em] text-softGold">Quick Actions</p>
@@ -284,10 +286,10 @@ export default function InvoiceTemplate({ invoice, order, onMarkPaid, previewMod
             </button>
           </div>
         </div>
-      </div>
+      </div>}
 
       {/* Invoice Summary Section */}
-      <div className="mb-4 grid gap-3 md:grid-cols-3">
+      {showChrome && <div className="mb-4 grid gap-3 md:grid-cols-3">
         <div className="rounded-[18px] border border-white/10 bg-[#111111] p-4">
           <p className="text-[11px] uppercase tracking-[0.18em] text-slate-400">Invoice Status</p>
           <div className={`mt-2 inline-flex rounded-full border px-3 py-1 text-xs font-semibold ${getStatusColor(displayStatus)}`}>
@@ -306,7 +308,7 @@ export default function InvoiceTemplate({ invoice, order, onMarkPaid, previewMod
             {kitchenStatus}
           </div>
         </div>
-      </div>
+      </div>}
       {/* Main Invoice Document */}
       <div className="rounded-[24px] border border-white/10 bg-[#0f0f0f] p-5 text-slate-300 shadow-panel">
         <div className="mb-6 flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
@@ -318,7 +320,7 @@ export default function InvoiceTemplate({ invoice, order, onMarkPaid, previewMod
             </div>
           </div>
           <div className="rounded-[20px] border border-white/10 bg-[#111111] p-4 text-sm text-slate-300">
-            <p className="text-xs uppercase tracking-[0.18em] text-softGold">Invoice Number</p>
+            <p className="text-xs uppercase tracking-[0.18em] text-softGold">Invoice No</p>
             <p className="mt-2 text-xl font-semibold text-white">{invoiceNumber}</p>
             <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
               <div>
@@ -326,8 +328,8 @@ export default function InvoiceTemplate({ invoice, order, onMarkPaid, previewMod
                 <p className="mt-1 text-white">{invoiceDate}</p>
               </div>
               <div>
-                <p className="text-xs uppercase tracking-[0.16em] text-slate-400">Order ID</p>
-                <p className="mt-1 text-white">{orderId}</p>
+                <p className="text-xs uppercase tracking-[0.16em] text-slate-400">Order Ref</p>
+                <p className="mt-1 text-white">{orderRef}</p>
               </div>
             </div>
           </div>

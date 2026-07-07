@@ -1,5 +1,6 @@
 import type { Order } from '../data/mockData';
 import { supabase } from '../lib/supabase';
+import { getMalaysiaDateTimeInputs } from '../utils/malaysiaDateTime';
 import { toSafeNumber } from '../utils/pricing';
 
 export type InvoiceRecord = {
@@ -17,16 +18,6 @@ export type InvoiceRecord = {
   pdf_url?: string | null;
   updated_at?: string | null;
 };
-
-const dateKey = (date = new Date()) =>
-  `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-
-const invoiceDateCode = (value: string) => {
-  const [year, month, day] = value.split('-');
-  return `${year.slice(-2)}${month}${day}`;
-};
-
-export const isSequentialInvoiceNo = (value?: string | null) => /^LBL-\d{6}-\d{3,}$/.test(String(value || ''));
 
 const getNumericOrderId = (order: Order) => {
   const raw = order.supabaseId || order.id;
@@ -47,31 +38,6 @@ const getInvoiceTotals = (order: Order) => {
     grandTotal: grandTotal || toSafeNumber(order.finalSubtotal ?? order.originalSubtotal) + deliveryFee
   };
 };
-
-export async function generateInvoiceNumber(invoiceDate = dateKey()) {
-  const code = invoiceDateCode(invoiceDate);
-  const prefix = `LBL-${code}-`;
-  const { data, error } = await supabase
-    .from('invoices')
-    .select('invoice_no')
-    .like('invoice_no', `${prefix}%`);
-
-  if (error) {
-    console.error('Failed to generate invoice number:', error);
-    throw error;
-  }
-
-  const maxNumber = (data ?? []).reduce((max, invoice) => {
-    const invoiceNo = String((invoice as InvoiceRecord).invoice_no || '');
-    if (!invoiceNo.startsWith(prefix)) return max;
-    const suffix = invoiceNo.slice(prefix.length);
-    if (!/^\d+$/.test(suffix)) return max;
-    const numberValue = Number(suffix);
-    return Number.isFinite(numberValue) ? Math.max(max, numberValue) : max;
-  }, 0);
-
-  return `${prefix}${String(maxNumber + 1).padStart(3, '0')}`;
-}
 
 export async function loadInvoicesFromSupabase() {
   const { data, error } = await supabase
@@ -112,16 +78,11 @@ export async function generateInvoiceForOrder(order: Order, options: { regenerat
   }
 
   const existingInvoice = await getInvoiceForOrder(order);
-  const today = dateKey();
-  const existingInvoiceNo = existingInvoice?.invoice_no || '';
-  const shouldKeepExistingInvoiceNo = isSequentialInvoiceNo(existingInvoiceNo);
-  const invoiceDate = shouldKeepExistingInvoiceNo ? existingInvoice?.invoice_date || today : today;
-  const invoiceNo = shouldKeepExistingInvoiceNo ? existingInvoiceNo : await generateInvoiceNumber(invoiceDate);
+  const invoiceDate = existingInvoice?.invoice_date || getMalaysiaDateTimeInputs().date;
   const totals = getInvoiceTotals(order);
 
   const payload = {
     order_id: orderId,
-    invoice_no: invoiceNo,
     invoice_date: invoiceDate,
     subtotal: totals.subtotal,
     delivery_fee: totals.deliveryFee,
@@ -152,6 +113,7 @@ export async function generateInvoiceForOrder(order: Order, options: { regenerat
     .from('invoices')
     .insert({
       ...payload,
+      invoice_no: null,
       created_at: new Date().toISOString()
     })
     .select()

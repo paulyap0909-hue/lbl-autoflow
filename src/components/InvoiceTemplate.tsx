@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { BadgeCheck, Building2, Download, Mail, MapPin, Phone, Printer, Send } from 'lucide-react';
 import type { Order } from '../data/mockData';
 import Toast from './Toast';
@@ -104,6 +104,7 @@ const buildItems = (
 
 export default function InvoiceTemplate({ invoice, order, onMarkPaid, previewMode = 'full', showChrome = true }: InvoiceTemplateProps) {
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
+  const invoiceRef = useRef<HTMLElement | null>(null);
   const safeInvoice = (invoice ?? {}) as Record<string, unknown>;
   const safeOrder = (order ?? {}) as Record<string, unknown>;
 
@@ -175,26 +176,54 @@ export default function InvoiceTemplate({ invoice, order, onMarkPaid, previewMod
   const displayTotal = totalAmount || Math.max(displaySubtotal - displayDiscount, 0) + deliveryFee;
   const hasInvoiceData = Boolean(invoiceNumber || orderRef || customerName);
 
-  const preparePrint = () => {
-    document.body.classList.add('printing-lbl-invoice');
-    const cleanup = () => {
-      document.body.classList.remove('printing-lbl-invoice');
-      window.removeEventListener('afterprint', cleanup);
-    };
-    window.addEventListener('afterprint', cleanup);
-    window.setTimeout(cleanup, 1200);
+  const openCleanPrintWindow = (mode: 'print' | 'pdf') => {
+    const invoiceHtml = invoiceRef.current?.outerHTML;
+    if (!invoiceHtml) {
+      setToast({ message: 'Invoice preview is not ready yet.', type: 'error' });
+      return;
+    }
+
+    const printWindow = window.open('', '_blank', 'noopener,noreferrer,width=920,height=1200');
+    if (!printWindow) {
+      setToast({ message: 'Please allow pop-ups to print or download this invoice.', type: 'error' });
+      return;
+    }
+
+    printWindow.document.open();
+    printWindow.document.write(`<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>${invoiceNumber || orderRef || 'LBL Invoice'}</title>
+  <style>${INVOICE_PRINT_DOCUMENT_CSS}</style>
+</head>
+<body>
+  ${invoiceHtml}
+  <script>
+    window.addEventListener('load', function () {
+      setTimeout(function () {
+        window.focus();
+        window.print();
+      }, 250);
+    });
+  </script>
+</body>
+</html>`);
+    printWindow.document.close();
+
+    setToast({
+      message: mode === 'pdf' ? 'PDF export opened. Choose “Save as PDF”.' : 'Clean invoice print opened.',
+      type: 'success'
+    });
   };
 
   const handleDownloadPdf = () => {
-    preparePrint();
-    window.print();
-    setToast({ message: 'PDF export ready. Choose “Save as PDF” in the print dialog.', type: 'success' });
+    openCleanPrintWindow('pdf');
   };
 
   const handlePrint = () => {
-    preparePrint();
-    window.print();
-    setToast({ message: 'Print dialog opened.', type: 'success' });
+    openCleanPrintWindow('print');
   };
 
   const handleMarkPaid = async () => {
@@ -280,7 +309,7 @@ export default function InvoiceTemplate({ invoice, order, onMarkPaid, previewMod
         </div>
       )}
 
-      <article className="lbl-invoice-a4 lbl-print-scope">
+      <article ref={invoiceRef} id="lbl-invoice-document" className="lbl-invoice-a4 lbl-print-scope">
         <header className="invoice-head">
           <section className="company-block">
             <h1>{COMPANY.name.toUpperCase()}</h1>
@@ -397,6 +426,111 @@ export default function InvoiceTemplate({ invoice, order, onMarkPaid, previewMod
     </div>
   );
 }
+
+
+const INVOICE_PRINT_DOCUMENT_CSS = `
+  @page { size: A4 portrait; margin: 0; }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 210mm;
+    min-height: 297mm;
+    background: #ffffff;
+    color: #161616;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  body {
+    display: flex;
+    justify-content: center;
+    align-items: flex-start;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  }
+  .lbl-invoice-a4 {
+    width: 210mm;
+    min-height: 297mm;
+    margin: 0;
+    padding: 14mm 16mm 9mm;
+    background: #fffdf8;
+    color: #161616;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+    overflow: hidden;
+    font-family: Georgia, 'Times New Roman', serif;
+  }
+  .invoice-head, .invoice-title-row, .bill-row, .invoice-bottom {
+    display: grid;
+    grid-template-columns: 1.12fr 0.88fr;
+    gap: 16mm;
+  }
+  .company-block h1 {
+    margin: 0;
+    max-width: 112mm;
+    font-size: 18pt;
+    font-weight: 500;
+    line-height: 1.15;
+    letter-spacing: 0.24em;
+    color: #080808;
+  }
+  .gold-rule { width: 100%; height: 0.35mm; margin: 4mm 0 5mm; background: #b58a4b; }
+  .info-line {
+    display: grid;
+    grid-template-columns: 6mm 1fr;
+    gap: 3mm;
+    align-items: start;
+    margin-top: 2.7mm;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    font-size: 9.4pt;
+    line-height: 1.35;
+    color: #171717;
+  }
+  .info-line.compact { margin-top: 2.4mm; }
+  .info-line span { color: #0e0e0e; transform: translateY(0.5mm); }
+  .info-line p { margin: 0; }
+  .brand-mark { text-align: right; color: #090909; }
+  .monogram { font-family: Georgia, 'Times New Roman', serif; font-size: 48pt; font-weight: 600; line-height: 0.9; letter-spacing: -0.18em; }
+  .brand-mark p { margin: 4mm 0 0; font-size: 12pt; text-transform: uppercase; letter-spacing: 0.08em; }
+  .invoice-title-row { align-items: end; margin-top: 18mm; }
+  .invoice-title-row h2 { margin: 0; font-size: 42pt; font-weight: 400; letter-spacing: 0.26em; color: #060606; }
+  .title-rule, .small-rule { width: 18mm; height: 0.6mm; margin-top: 4mm; background: #b58a4b; }
+  .invoice-meta { margin: 0; padding-left: 8mm; border-left: 0.35mm solid #b58a4b; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+  .invoice-meta div { display: grid; grid-template-columns: 34mm 1fr; gap: 5mm; margin: 0 0 4.2mm; }
+  .invoice-meta dt { text-transform: uppercase; letter-spacing: 0.2em; color: #111; font-size: 9.5pt; }
+  .invoice-meta dd { margin: 0; color: #111; font-size: 10pt; word-break: break-word; }
+  .bill-row { align-items: stretch; margin-top: 12mm; }
+  .bill-card, .fulfillment-card, .payment-box { border-radius: 3mm; background: linear-gradient(135deg, rgba(181, 138, 75, 0.12), rgba(255,255,255,0.38)); padding: 6mm; }
+  .section-label { margin: 0 0 3mm; color: #a97937; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 8.5pt; font-weight: 600; letter-spacing: 0.22em; text-transform: uppercase; }
+  .bill-card h3 { margin: 0 0 3mm; font-size: 17pt; font-weight: 400; }
+  .mini-grid { display: grid; grid-template-columns: 28mm 1fr; row-gap: 2.5mm; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 9.2pt; }
+  .mini-grid span { text-transform: uppercase; letter-spacing: 0.14em; color: #8a7a67; }
+  .mini-grid strong { font-weight: 600; color: #111; }
+  .invoice-items { margin-top: 11mm; border-top: 0.35mm solid #b58a4b; border-bottom: 0.35mm solid #b58a4b; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+  .items-header, .items-row { display: grid; grid-template-columns: 12mm minmax(62mm, 1fr) 22mm 34mm 30mm; gap: 3mm; align-items: center; }
+  .items-header { padding: 5mm 2mm; color: #111; font-size: 8.7pt; font-weight: 700; letter-spacing: 0.16em; text-transform: uppercase; }
+  .items-row { min-height: 10mm; padding: 2.3mm 2mm; border-top: 0.25mm dotted #dccbb1; color: #1d1d1d; font-size: 10pt; }
+  .items-row:first-of-type { border-top: 0.35mm solid #b58a4b; }
+  .items-header span:nth-child(n+3), .items-row span:nth-child(n+3) { text-align: right; }
+  .invoice-bottom { margin-top: 10mm; align-items: start; }
+  .notes-block { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 10pt; line-height: 1.45; }
+  .notes-block p { margin: 0 0 4mm; }
+  .script-line { color: #a97937; font-family: Georgia, 'Times New Roman', serif; font-size: 15pt; font-style: italic; }
+  .totals-block { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+  .totals-line, .totals-main { display: flex; justify-content: space-between; gap: 6mm; padding: 2.5mm 0; border-bottom: 0.35mm solid #b58a4b; text-transform: uppercase; letter-spacing: 0.14em; font-size: 10pt; }
+  .totals-main { margin-top: 2mm; align-items: baseline; border-top: 0.35mm solid #b58a4b; border-bottom: 0; font-size: 18pt; }
+  .totals-main strong { font-size: 20pt; letter-spacing: 0.04em; }
+  .payment-box { display: flex; gap: 5mm; align-items: center; margin-top: 6mm; }
+  .bank-icon { display: flex; width: 13mm; height: 13mm; flex: 0 0 auto; align-items: center; justify-content: center; border: 0.35mm solid #111; border-radius: 999px; }
+  .payment-box p, .payment-box h4 { margin: 1mm 0; }
+  .payment-box h4 { font-size: 13pt; letter-spacing: 0.12em; }
+  .invoice-footer { margin-top: 8mm; padding-top: 4mm; border-top: 0.35mm solid #b58a4b; text-align: center; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; page-break-inside: avoid; }
+  .invoice-footer p { margin: 0; font-size: 8.5pt; letter-spacing: 0.25em; text-transform: uppercase; }
+  .invoice-footer span { margin: 0 4mm; }
+  .invoice-footer strong { display: block; margin-top: 3.2mm; color: #a97937; font-family: Georgia, 'Times New Roman', serif; font-size: 13pt; font-style: italic; font-weight: 400; }
+  .footer-heart { display: block; margin-top: 2mm !important; color: #a97937; }
+  button, .lbl-invoice-screen-toolbar { display: none !important; }
+`;
 
 function InfoLine({ icon, text, compact = false }: { icon: React.ReactNode; text: string; compact?: boolean }) {
   return (

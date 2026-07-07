@@ -506,8 +506,8 @@ export default function CustomersPage({ customers, orders = [], source }: Custom
           </div>
         </div>
 
-        <div role="table" aria-label="Customer directory">
-          <div role="row" className="hidden grid-cols-[minmax(160px,1.25fr)_120px_110px_110px_60px_100px_75px_minmax(270px,1.7fr)] gap-3 border-b border-[#334155] bg-[#0F172A] px-4 py-2.5 text-[10px] font-semibold uppercase tracking-[0.13em] text-slate-500 xl:grid">
+        <div className="overflow-x-auto" role="table" aria-label="Customer directory">
+          <div role="row" className="hidden min-w-[1280px] grid-cols-[minmax(160px,1.15fr)_120px_110px_110px_60px_100px_75px_minmax(420px,2fr)] gap-3 border-b border-[#334155] bg-[#0F172A] px-4 py-2.5 text-[10px] font-semibold uppercase tracking-[0.13em] text-slate-500 xl:grid">
             <span>Customer</span><span>Phone</span><span>Total Spend</span><span>Wallet Balance</span><span>Orders</span><span>Last Order</span><span>Tier</span><span>Action</span>
           </div>
 
@@ -515,7 +515,7 @@ export default function CustomersPage({ customers, orders = [], source }: Custom
             <div
               key={customer.crmKey}
               role="row"
-              className="grid w-full gap-3 border-b border-[#263348] px-4 py-3 text-left transition last:border-b-0 hover:bg-white/[0.025] sm:grid-cols-2 sm:items-center xl:grid-cols-[minmax(160px,1.25fr)_120px_110px_110px_60px_100px_75px_minmax(270px,1.7fr)]"
+              className="grid w-full min-w-[1280px] gap-3 border-b border-[#263348] px-4 py-3 text-left transition last:border-b-0 hover:bg-white/[0.025] sm:grid-cols-2 sm:items-center xl:grid-cols-[minmax(160px,1.15fr)_120px_110px_110px_60px_100px_75px_minmax(420px,2fr)]"
             >
               <span className="min-w-0">
                 <span className="block truncate text-sm font-semibold text-white">{customer.name}</span>
@@ -527,7 +527,7 @@ export default function CustomersPage({ customers, orders = [], source }: Custom
               <span className="hidden text-sm text-slate-300 xl:block">{customer.totalOrders}</span>
               <span className="hidden text-xs text-slate-300 xl:block">{getRelativeLastOrder(customer.lastOrderDate)}</span>
               <span className={`w-fit rounded-full border px-2.5 py-1 text-[10px] font-semibold ${tierClass(customer.customerTier)}`}>{customer.customerTier}</span>
-              <span className="col-span-2 flex flex-wrap gap-1.5 xl:col-span-1">
+              <span className="col-span-2 flex min-w-[420px] flex-wrap items-center gap-1.5 xl:col-span-1">
                 <button type="button" onClick={() => setSelectedCustomerKey(customer.crmKey)} className="inline-flex items-center gap-1 rounded-lg border border-[#334155] px-2.5 py-2 text-[11px] font-semibold text-slate-200"><Eye size={13} /> Profile</button>
                 <button type="button" onClick={() => openCustomerInvoices(customer)} className="inline-flex items-center gap-1 rounded-lg border border-sky-500/25 bg-sky-500/10 px-2.5 py-2 text-[11px] font-semibold text-sky-200"><FileText size={13} /> Invoices</button>
                 <button type="button" onClick={() => openWalletModal(customer, 'top_up')} className="inline-flex items-center gap-1 rounded-lg border border-[#C8A96B]/35 bg-[#C8A96B]/10 px-2.5 py-2 text-[11px] font-semibold text-[#E4C98E]"><PlusCircle size={13} /> Top Up</button>

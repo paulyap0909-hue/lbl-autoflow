@@ -614,18 +614,60 @@ export default function CustomersPage({ customers, orders = [], source }: Custom
               </section>
 
               <section className="rounded-[16px] border border-[#334155] bg-[#111827] p-4">
-                <p className="text-xs font-semibold uppercase tracking-[0.15em] text-[#C8A96B]">Recent Orders</p>
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-[0.15em] text-[#C8A96B]">Recent Orders</p>
+                    <p className="mt-1 text-xs text-slate-500">Open, print or send invoice details directly from each customer order.</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => openCustomerInvoices(selectedCustomer)}
+                    className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-sky-500/25 bg-sky-500/10 px-2.5 py-2 text-[11px] font-semibold text-sky-200"
+                  >
+                    <FileText size={13} /> All Invoices
+                  </button>
+                </div>
                 <div className="mt-3 divide-y divide-[#334155]">
-                  {selectedCustomer.timeline.length > 0 ? selectedCustomer.timeline.map((item) => (
-                    <div key={item.id} className="grid grid-cols-[1fr_auto] gap-3 py-3">
-                      <div className="min-w-0">
-                        <p className="truncate text-sm font-semibold text-white">{item.orderNo}</p>
-                        <p className="mt-1 truncate text-xs text-slate-400">{item.product}{item.flavour ? ` - ${item.flavour}` : ''}</p>
-                        <p className="mt-1 text-[11px] text-slate-500">{item.date} · {item.paymentStatus} · {item.deliveryStatus}</p>
+                  {selectedCustomer.relatedOrders.length > 0 ? selectedCustomer.relatedOrders.slice(0, 8).map((order) => {
+                    const key = order.supabaseId || order.id;
+                    const orderDate = getOrderTimelineDate(order as OrderWithCustomerFields);
+                    const flavours = getOrderFlavours(order as OrderWithCustomerFields).join(', ');
+                    return (
+                      <div key={key} className="py-3">
+                        <div className="grid grid-cols-[1fr_auto] gap-3">
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-semibold text-white">{order.orderNo || order.id}</p>
+                            <p className="mt-1 truncate text-xs text-slate-400">{order.product}{flavours ? ` - ${flavours}` : ''}</p>
+                            <p className="mt-1 text-[11px] text-slate-500">{orderDate || '-'} · {order.paymentStatus} · {order.deliveryStatus}</p>
+                          </div>
+                          <p className="text-sm font-semibold text-[#E4C98E]">{formatRM(getOrderAmount(order as OrderWithCustomerFields))}</p>
+                        </div>
+                        <div className="mt-3 flex flex-wrap gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => { setInvoiceCustomerKey(selectedCustomer.crmKey); setInvoiceOrderId(key); }}
+                            className="inline-flex items-center gap-1 rounded-lg border border-sky-500/25 bg-sky-500/10 px-2.5 py-2 text-[11px] font-semibold text-sky-200"
+                          >
+                            <Eye size={13} /> View Invoice
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => { setInvoiceCustomerKey(selectedCustomer.crmKey); setInvoiceOrderId(key); setToast({ message: 'Invoice opened. Use the print button inside the invoice preview.', type: 'info' }); }}
+                            className="inline-flex items-center gap-1 rounded-lg border border-[#C8A96B]/35 bg-[#C8A96B]/10 px-2.5 py-2 text-[11px] font-semibold text-[#E4C98E]"
+                          >
+                            <FileText size={13} /> Print Invoice
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => openWhatsApp(selectedCustomer.whatsapp || selectedCustomer.phone)}
+                            className="inline-flex items-center gap-1 rounded-lg bg-emerald-500/10 px-2.5 py-2 text-[11px] font-semibold text-emerald-200"
+                          >
+                            <MessageCircle size={13} /> WhatsApp Invoice
+                          </button>
+                        </div>
                       </div>
-                      <p className="text-sm font-semibold text-[#E4C98E]">{formatRM(item.total)}</p>
-                    </div>
-                  )) : <p className="py-4 text-sm text-slate-500">No recent orders.</p>}
+                    );
+                  }) : <p className="py-4 text-sm text-slate-500">No recent orders.</p>}
                 </div>
               </section>
 
